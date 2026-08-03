@@ -196,16 +196,19 @@ class BaseTrans(BaseCon):
         for i, it in enumerate(split_source_text):
             if self._exit(): return
             self.signal(text=tr('starttrans') + f' {i} ')
-            # 组成合法的srt格式字符串
             srt_str = "\n\n".join(
                 [f"{srt_dict['line']}\n{srt_dict['time']}\n{srt_dict['text'].strip()}" for srt_dict in it])
             result = self._get_cache(srt_str)
             if not result:
                 result = self._item_task(srt_str)
-                if not result.strip():
-                    raise TranslateSrtError(tr("Translate result is empty")+f'\n{self.api_url}')
-                self._set_cache(it, result)
+                if not result or not result.strip():
+                    raise TranslateSrtError(tr("Translate result is empty") + f'\n{self.api_url}')
+                # Use the same serialized input as _get_cache.  Upstream used
+                # the subtitle list here, which made SRT cache entries miss.
+                self._set_cache(srt_str, result)
 
+            if not result:
+                raise TranslateSrtError(tr("Translate result is empty") + f'\n{self.api_url}')
             self.signal(text=result, type='subtitle')
             raws_list.extend(get_subtitle_from_srt(result, is_file=False))
             time.sleep(self.wait_sec)

@@ -478,6 +478,8 @@ def build_sts_params(args: argparse.Namespace) -> dict:
 
 def build_vtv_params(args: argparse.Namespace) -> dict:
     """Build VTV-specific parameters."""
+    from videotrans.configure.config import params, settings
+
     return {
         "source_language_code": args.source_language_code,
         "target_language_code": args.target_language_code,
@@ -487,6 +489,9 @@ def build_vtv_params(args: argparse.Namespace) -> dict:
         "is_cuda": args.cuda,
         "translate_type": args.translate_type,
         "is_separate": args.is_separate,
+        "embed_bgm": bool(params.get("embed_bgm", True)),
+        "backaudio_volume": float(settings.get("backaudio_volume", 0.8)),
+        "loop_backaudio": int(settings.get("loop_backaudio", 0)),
         "recogn2pass": args.recogn2pass,
         "subtitle_type": args.subtitle_type,
         "clear_cache": args.clear_cache,

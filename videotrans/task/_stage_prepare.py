@@ -206,9 +206,12 @@ class PrepareMixin:
         from videotrans.util.help_misc import is_connect_hf
         title = tr('Separating vocals and background music, which may take a longer time')
         uvr_models = settings.get('uvr_models')
-        URL_PREFIX= UVR_URL_MS if not is_connect_hf() else UVR_URL_HF
-        
-        if uvr_models.startswith('spleeter'):
+        is_demucs = str(uvr_models).lower().startswith('demucs')
+        URL_PREFIX = UVR_URL_MS if not is_connect_hf() else UVR_URL_HF
+
+        if is_demucs:
+            logger.debug('使用本机 Demucs 分离，不下载 UVR/ONNX 模型')
+        elif uvr_models.startswith('spleeter'):
             down_file_from_hf(f'{ROOT_DIR}/models/onnx', [
                 URL_PREFIX.replace('{}','vocals.fp16.onnx'),
                 URL_PREFIX.replace('{}','accompaniment.fp16.onnx')

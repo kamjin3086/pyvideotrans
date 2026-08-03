@@ -599,6 +599,7 @@ class Ui_setini(object):
                        'veryslow'],
             "lang": list(app_cfg.SUPPORT_LANG.keys()),
             "uvr_models": [
+                'demucs',
                 'spleeter',
                 'UVR-MDX-NET-Inst_HQ_4',
                 'UVR-MDX-NET-Inst_HQ_1',

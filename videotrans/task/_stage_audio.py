@@ -72,13 +72,29 @@ class AudioMixin:
                                                   vtime)
                 instrument_file = self.cfg.cache_folder + f"/instrument-concat.wav"
 
-            tmp_out_wav = Path(self.cfg.cache_folder + f'/{time.time()}-1.wav').as_posix()
+            tmp_out_wav = Path(self.cfg.cache_folder + '/target-with-original-background.wav').as_posix()
             tmp_volume = Path(self.cfg.cache_folder + f'/{time.time()}.wav').as_posix()
-            self.convert_to_wav(instrument_file, tmp_volume, ["-filter:a", f"volume={self.cfg.backaudio_volume}"])
+            # Do not use BaseCon.convert_to_wav here: it trims leading and
+            # trailing "silence" after conversion.  That behavior is useful
+            # for individual TTS clips but destroys the absolute timeline of
+            # a Demucs stem (a 120 s test stem was shifted and cut to 65 s).
+            runffmpeg([
+                '-y', '-i', instrument_file,
+                '-filter:a', f'volume={self.cfg.backaudio_volume}',
+                '-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le', tmp_volume,
+            ], force_cpu=True)
             runffmpeg(['-y', '-i', os.path.basename(self.cfg.target_wav), '-i', os.path.basename(tmp_volume),
                              '-filter_complex',
-                             "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2", '-ac', '2', "-b:a", "128k",
+                             "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+                             "alimiter=limit=0.95:attack=5:release=50", '-ac', '2',
                              '-c:a', 'pcm_s16le', os.path.basename(tmp_out_wav)], cmd_dir=self.cfg.cache_folder)
-            shutil.copy2(tmp_out_wav, self.cfg.target_wav)
+            if not vail_file(tmp_out_wav):
+                raise RuntimeError(f'背景音混合文件生成失败: {tmp_out_wav}')
+            # Point the assembly stage at the distinct mixed file.  Copying it
+            # over target.wav proved unreliable in the local end-to-end run:
+            # the later AAC mux still consumed the voice-only file.
+            self.cfg.target_wav = tmp_out_wav
+            logger.debug(f'背景音混合完成: {self.cfg.target_wav}')
         except Exception as e:
             logger.exception(f'重新嵌入分离的背景音失败 {e}', exc_info=True)
+            raise
