@@ -21,7 +21,14 @@ def getset_gpu(force_cpu=False) -> int:
         app_cfg.NVIDIA_GPU_NUMS = 0
         return 0
         
-    import torch
+    try:
+        import torch
+    except ModuleNotFoundError:
+        # CPU-only profiles (Faster-Whisper via CTranslate2 and HTTP TTS)
+        # deliberately omit the heavyweight PyTorch stack.
+        app_cfg.NVIDIA_GPU_NUMS = 0
+        logger.debug('未安装 torch，使用 CPU 模式')
+        return 0
     # 无可用显卡
     app_cfg.NVIDIA_GPU_NUMS = 0 if not torch.cuda.is_available() else torch.cuda.device_count()
     logger.debug(f'可用 Nvidia 显卡数: {app_cfg.NVIDIA_GPU_NUMS}')
@@ -77,7 +84,10 @@ def get_cudaX() -> int:
 def mps_or_cpu() -> str:
     if platform.system() != 'Darwin':
         return 'cpu'
-    import torch
+    try:
+        import torch
+    except ModuleNotFoundError:
+        return 'cpu'
     if torch.backends.mps.is_built() and torch.backends.mps.is_available():
         return 'mps'
     return 'cpu'

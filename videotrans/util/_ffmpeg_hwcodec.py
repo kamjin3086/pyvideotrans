@@ -16,7 +16,13 @@ def check_hw_on_start(force=False):
 
 
 def get_video_codec(compat=None,force=False) -> str:
-    import torch
+    # Torch is only needed to decide whether NVENC is available.  The
+    # lightweight Faster-Whisper/HTTP-TTS profile intentionally does not ship
+    # PyTorch, so software FFmpeg probing must remain usable without it.
+    try:
+        import torch
+    except ModuleNotFoundError:
+        torch = None
     _codec_cache = app_cfg.codec_cache
     try:
         if not _codec_cache and Path(f'{ROOT_DIR}/videotrans/codec.json').exists():
@@ -110,7 +116,7 @@ def get_video_codec(compat=None,force=False) -> str:
             for encoder_suffix in encoders_to_test:
                 if encoder_suffix == 'nvenc':
                     try:
-                        if not torch.cuda.is_available():
+                        if torch is None or not torch.cuda.is_available():
                             logger.debug("CUDA 不可用，跳过 nvenc 测试。")
                             continue
                     except ImportError:

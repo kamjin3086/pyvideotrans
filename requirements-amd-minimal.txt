@@ -1,0 +1,31 @@
+# AMD/ROCm-friendly pyVideoTrans runtime profile.
+# Deliberately excludes upstream CUDA PyTorch, F5-TTS, Qwen-TTS Python,
+# FunASR, pyannote and other optional model stacks. TTS is provided by the
+# existing hermes-tts-lab qwen-tts CLI and its already-downloaded GGUF models.
+PySide6>=6.8
+aiohttp>=3.9
+aiofiles>=23.2
+httpx>=0.27
+requests>=2.31
+openai>=1.50
+tenacity>=8.2
+tqdm>=4.66
+urllib3>=2.0
+pydub>=0.25
+numpy>=1.26
+pandas>=2.0
+soundfile>=0.12
+sounddevice>=0.4
+srt>=3.5
+av>=12
+pillow>=10
+psutil>=5.9
+pyyaml>=6.0
+packaging>=23
+rich>=13
+regex>=2024.0
+websockets>=12
+websocket-client>=1.6
+python-dateutil>=2.8
+zhconv>=1.4
+faster-whisper>=1.1
