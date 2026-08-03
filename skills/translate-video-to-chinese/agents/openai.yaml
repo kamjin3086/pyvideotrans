@@ -1,0 +1,4 @@
+interface:
+  display_name: "视频英译中与中文配音"
+  short_description: "自动下载英文视频并生成保留背景声的中文男声配音与硬字幕成片"
+  default_prompt: "使用 $translate-video-to-chinese 翻译这个视频：https://www.youtube.com/watch?v=example"

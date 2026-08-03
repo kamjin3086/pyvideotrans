@@ -51,3 +51,27 @@ TTS 不调用或修改共享的 18081 `tts-server`。本项目通过 `qwen-tts -
 本地 LLM 保持串行调用，避免多个长请求同时抢占共享 Qwen GPU 资源。项目仅修复 SRT 翻译缓存键，使相同输入的后续重跑可以命中缓存。
 
 本配置不启动第二个 TTS 服务，不修改 `/home/kamjin/projects/hermes-tts-lab`、`/home/kamjin/projects/hermes-omnivoice-lab` 或 llama-swap 的配置。
+
+## 安装 Hermes 视频翻译 Skill
+
+仓库自带 `translate-video-to-chinese` skill。先按本文档完成当前项目和本机模型配置，再从 fork 的功能分支安装 skill：
+
+```bash
+hermes skills install https://raw.githubusercontent.com/kamjin3086/pyvideotrans/feat/local-amd-dubbing-workflow/skills/translate-video-to-chinese/SKILL.md
+```
+
+安装后重启 Hermes，或在交互会话中执行 `/reload-skills`。随后可以直接说：
+
+```text
+帮我使用 skill 翻译这个视频：https://www.youtube.com/watch?v=FhTjL1FxRUs
+```
+
+skill 会依次执行环境预检、单视频下载、英文语音识别、串行中译、Demucs 人声替换、Qwen CLI 男声配音、中文字幕压制和成片校验。默认输出到 `~/Videos/translated-videos/<视频ID>/`，最终 MP4、源视频、日志和 `job.json` 清单会保存在同一个任务目录中。
+
+预检不会自动安装依赖或下载大模型。若缺少 Faster-Whisper、Qwen TTS 或 Demucs 资源，它会先停止并报告缺失项和大致体积，避免未经确认占用磁盘或修改其他项目。
+
+也可以在仓库内直接检查环境：
+
+```bash
+python3 skills/translate-video-to-chinese/scripts/translate_video.py --preflight-only
+```

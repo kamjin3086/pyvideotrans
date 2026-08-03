@@ -26,9 +26,9 @@ LOCAL_PARAMS = {
     "source_language": "en",
     "target_language": "zh-cn",
     "translate_type": 9,  # LocalLLM
-    "localllm_api": "http://127.0.0.1:8101/v1",
+    "localllm_api": os.getenv("PYVIDEOTRANS_LLM_API", "http://127.0.0.1:8101/v1"),
     "localllm_key": "no-key",
-    "localllm_model": "Qwen3.6-35B-A3B-instruct",
+    "localllm_model": os.getenv("PYVIDEOTRANS_LLM_MODEL", "Qwen3.6-35B-A3B-instruct"),
     # Fifty subtitle blocks normally fit comfortably below 4096 output tokens.
     # Capping the response prevents one pathological request from occupying the
     # local model until the five-minute HTTP timeout.
