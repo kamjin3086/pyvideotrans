@@ -54,10 +54,10 @@ TTS 不调用或修改共享的 18081 `tts-server`。本项目通过 `qwen-tts -
 
 ## 安装 Hermes 视频翻译 Skill
 
-仓库自带 `translate-video-to-chinese` skill。先按本文档完成当前项目和本机模型配置，再从 fork 的功能分支安装 skill：
+仓库自带 `translate-video-to-chinese` skill。先按本文档完成当前项目和本机模型配置，再从 fork 的主分支安装 skill：
 
 ```bash
-hermes skills install https://raw.githubusercontent.com/kamjin3086/pyvideotrans/feat/local-amd-dubbing-workflow/skills/translate-video-to-chinese/SKILL.md --force --yes
+hermes skills install https://raw.githubusercontent.com/kamjin3086/pyvideotrans/main/skills/translate-video-to-chinese/SKILL.md --force --yes
 ```
 
 这里需要 `--force`，因为 Hermes 会把社区 URL 中“读取本机路径环境变量、调用 `yt-dlp`/`ffmpeg`/项目 CLI、访问本地 LLM HTTP 接口”的组合保守标记为 `CAUTION`。该参数只覆盖这种可审查的 caution 结论，不能覆盖 `dangerous`；skill 的脚本源码位于 `skills/translate-video-to-chinese/scripts/translate_video.py`，可在安装前直接检查。
