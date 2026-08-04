@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download, translate, dub, subtitle, and validate one English video."""
+"""Download, translate, dub, subtitle, and validate one supported-language video."""
 
 from __future__ import annotations
 
@@ -21,6 +21,18 @@ from typing import Any, Iterable
 DEFAULT_OUTPUT_ROOT = Path.home() / "Videos" / "translated-videos"
 DEFAULT_LLM_API = "http://127.0.0.1:8101/v1"
 MEDIA_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi"}
+SUPPORTED_SOURCE_LANGUAGES = {
+    "auto": "自动识别",
+    "en": "英语",
+    "ja": "日语",
+    "ko": "韩语",
+    "fr": "法语",
+    "de": "德语",
+    "es": "西班牙语",
+    "it": "意大利语",
+    "pt": "葡萄牙语",
+    "ru": "俄语",
+}
 SRT_TIME_RE = re.compile(
     r"(?P<sh>\d{2}):(?P<sm>\d{2}):(?P<ss>\d{2}),(?P<sms>\d{3})\s+-->\s+"
     r"(?P<eh>\d{2}):(?P<em>\d{2}):(?P<es>\d{2}),(?P<ems>\d{3})"
@@ -467,12 +479,27 @@ def run_translation(
     source_video: Path,
     result_dir: Path,
     log_path: Path,
+    manifest_path: Path,
+    source_language: str,
     force: bool,
 ) -> Path:
     expected = result_dir / f"{source_video.stem}.mp4"
-    if expected.is_file() and not force:
+    previous_language = None
+    if manifest_path.is_file():
+        try:
+            previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+            previous_language = previous.get("settings", {}).get("source_language")
+        except (OSError, json.JSONDecodeError, AttributeError):
+            previous_language = None
+
+    if expected.is_file() and not force and previous_language == source_language:
         print(f"[translate] 复用已存在成片并重新校验：{expected}")
         return expected.resolve()
+    if expected.is_file() and not force:
+        print(
+            "[translate] 已有成片的源语言配置不匹配，重新执行："
+            f"previous={previous_language or 'unknown'}, requested={source_language}"
+        )
 
     result_dir.mkdir(parents=True, exist_ok=True)
     command = [
@@ -488,11 +515,11 @@ def run_translation(
         "--model_name",
         "small",
         "--detect_language",
-        "en",
+        source_language,
         "--translate_type",
         "9",
         "--source_language_code",
-        "en",
+        source_language,
         "--target_language_code",
         "zh-cn",
         "--tts_type",
@@ -521,11 +548,19 @@ def write_manifest(path: Path, payload: dict[str, Any]) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="下载英文视频，生成保留背景声的中文男声配音和硬字幕成片。"
+        description="下载常用语言视频，生成保留背景声的中文男声配音和硬字幕成片。"
     )
     parser.add_argument("source", nargs="?", help="视频 URL 或本地视频文件")
     parser.add_argument("--output-root", default=os.getenv("PYVIDEOTRANS_OUTPUT_ROOT", str(DEFAULT_OUTPUT_ROOT)))
     parser.add_argument("--project-dir", default=os.getenv("PYVIDEOTRANS_HOME"))
+    parser.add_argument(
+        "--source-language",
+        choices=tuple(SUPPORTED_SOURCE_LANGUAGES),
+        default=os.getenv("PYVIDEOTRANS_SOURCE_LANGUAGE", "auto"),
+        help="源视频语言；默认 auto。支持：" + "、".join(
+            f"{code}={name}" for code, name in SUPPORTED_SOURCE_LANGUAGES.items()
+        ),
+    )
     parser.add_argument("--max-height", type=int, default=1080)
     parser.add_argument("--cookies-from-browser", help="仅在用户明确授权时使用，例如 chrome 或 firefox")
     parser.add_argument("--force", action="store_true", help="清理项目任务缓存并重新执行翻译")
@@ -537,6 +572,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     try:
+        if args.source_language not in SUPPORTED_SOURCE_LANGUAGES:
+            raise WorkflowError(
+                f"不支持源语言代码 {args.source_language!r}。当前只支持："
+                + ", ".join(SUPPORTED_SOURCE_LANGUAGES)
+            )
         config = preflight(args.project_dir)
         print_preflight(config)
         if args.preflight_only:
@@ -586,7 +626,15 @@ def main() -> int:
                 args.cookies_from_browser,
             )
 
-        final_video = run_translation(config, source_video, result_dir, log_path, args.force)
+        final_video = run_translation(
+            config,
+            source_video,
+            result_dir,
+            log_path,
+            manifest_path,
+            args.source_language,
+            args.force,
+        )
         print(f"[validate] 正在校验成片和背景声：{final_video}")
         validation = validate_result(final_video, config)
 
@@ -599,7 +647,7 @@ def main() -> int:
             "final_video": str(final_video),
             "job_directory": str(job_dir),
             "settings": {
-                "source_language": "en",
+                "source_language": args.source_language,
                 "target_language": "zh-cn",
                 "voice": "dylan",
                 "llm_api": config["llm_api"],

@@ -4,8 +4,8 @@
 
 | 环节 | 服务/模型 |
 | --- | --- |
-| 英语 STT | Faster‑Whisper `small`，CPU `int8`，项目通过符号链接复用已有的 464MB 缓存 |
-| 英语→中文翻译 | `http://127.0.0.1:8101/v1`，`Qwen3.6-35B-A3B-instruct`，串行调用 |
+| 常用语言 STT | Faster‑Whisper `small` 多语模型，CPU `int8`，项目通过符号链接复用已有的 464MB 缓存 |
+| 常用语言→中文翻译 | `http://127.0.0.1:8101/v1`，`Qwen3.6-35B-A3B-instruct`，串行调用 |
 | 中文 TTS | Hermes `qwen-tts` CLI，CustomVoice Q8 模型，男声 `dylan`，单进程批量逐行生成 |
 | 人声/背景分离 | 本机 Demucs 4.1.0，`htdemucs`，通过已有 ROCm GPU 环境运行 |
 
@@ -16,7 +16,7 @@ cd /home/kamjin/projects/pyVideoTrans
 ./run_local.sh
 ```
 
-在界面中选择英文源语言、简体中文目标语言；配置已预填为 Faster‑Whisper / LocalLLM / OpenAI‑TTS(Hermes)，并默认生成硬字幕。
+在界面中选择源语言和简体中文目标语言；配置已预填为 Faster‑Whisper / LocalLLM / OpenAI‑TTS(Hermes)，并默认生成硬字幕。
 
 查看配置而不启动界面：
 
@@ -68,7 +68,9 @@ hermes skills install https://raw.githubusercontent.com/kamjin3086/pyvideotrans/
 帮我使用 skill 翻译这个视频：https://www.youtube.com/watch?v=FhTjL1FxRUs
 ```
 
-skill 会依次执行环境预检、单视频下载、英文语音识别、串行中译、Demucs 人声替换、Qwen CLI 男声配音、中文字幕压制和成片校验。默认输出到 `~/Videos/translated-videos/<视频ID>/`，最终 MP4、源视频、日志和 `job.json` 清单会保存在同一个任务目录中。
+skill 会依次执行环境预检、单视频下载、源语音识别、串行中译、Demucs 人声替换、Qwen CLI 男声配音、中文字幕压制和成片校验。默认输出到 `~/Videos/translated-videos/<视频ID>/`，最终 MP4、源视频、日志和 `job.json` 清单会保存在同一个任务目录中。
+
+源语言默认自动识别，也可以明确指定 `--source-language en|ja|ko|fr|de|es|it|pt|ru`。该轻量工作流只正式支持英语、日语、韩语、法语、德语、西班牙语、意大利语、葡萄牙语和俄语，不会为了冷门语言自动安装额外模型。
 
 预检不会自动安装依赖或下载大模型。若缺少 Faster-Whisper、Qwen TTS 或 Demucs 资源，它会先停止并报告缺失项和大致体积，避免未经确认占用磁盘或修改其他项目。
 

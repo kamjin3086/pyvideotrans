@@ -1,6 +1,6 @@
 ---
 name: translate-video-to-chinese
-description: Download an English YouTube or other yt-dlp-compatible video, translate its speech and subtitles into Simplified Chinese with pyVideoTrans, replace only the English vocal track with a Chinese male voice while preserving background audio through Demucs, burn Chinese subtitles into the video, validate the result, and return the final path. Use when the user asks to translate, dub, localize, or download an online English video as a Chinese version, especially prompts such as “帮我使用 skill 翻译这个视频：[URL]” or “把这个 YouTube 视频做成中文配音版”.
+description: Download a common-language YouTube or other yt-dlp-compatible video, translate its speech and subtitles into Simplified Chinese with pyVideoTrans, replace only the original vocal track with a Chinese male voice while preserving background audio through Demucs, burn Chinese subtitles into the video, validate the result, and return the final path. Supports automatic detection plus English, Japanese, Korean, French, German, Spanish, Italian, Portuguese, and Russian. Use when the user asks to translate, dub, localize, or download an online video as a Chinese version, especially prompts such as “帮我使用 skill 翻译这个视频：[URL]”, “把这个日语视频做成中文配音版”, or “将这个法语视频翻译成中文”.
 ---
 
 # Translate Video to Chinese
@@ -11,14 +11,15 @@ Use the repository's tested local workflow. Keep translation calls serial, use Q
 
 1. Extract exactly one video URL or local video path from the user's request.
 2. Ask for a URL or path only if none was provided.
-3. Run the bundled [workflow script](scripts/translate_video.py) through Hermes' absolute skill-directory template variable:
+3. Infer an explicitly stated source language and map it to `en`, `ja`, `ko`, `fr`, `de`, `es`, `it`, `pt`, or `ru`. Otherwise use `auto`.
+4. Run the bundled [workflow script](scripts/translate_video.py) through Hermes' absolute skill-directory template variable:
 
    ```bash
-   python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" "<URL-or-local-video>"
+   python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" "<URL-or-local-video>" --source-language <code-or-auto>
    ```
 
-4. Let the script complete. Do not start a second translation of the same video concurrently.
-5. Report the absolute final video path, job directory, validation status, and manifest path printed by the script.
+5. Let the script complete. Do not start a second translation of the same video concurrently.
+6. Report the absolute final video path, job directory, validation status, and manifest path printed by the script.
 
 The default output directory is `~/Videos/translated-videos/<video-id>/`. Honor a user-requested destination with `--output-root /absolute/path`.
 
@@ -43,6 +44,9 @@ python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --preflight-only
 ## Handle common cases
 
 - Process one URL at a time. YouTube playlist URLs default to the single selected video.
+- Prefer an explicit source language when the user names one. Use automatic detection when the user does not know or mention it.
+- Support only `auto`, `en`, `ja`, `ko`, `fr`, `de`, `es`, `it`, `pt`, and `ru`. If the user requests another language, explain that the streamlined local workflow does not support it rather than installing another model or attempting an untested workaround.
+- Warn that automatic detection is intended for videos with one dominant spoken language; ask for an explicit supported language if detection produces poor transcription.
 - For a login-gated video, retry only after the user explicitly chooses a browser cookie source:
 
   ```bash
