@@ -187,6 +187,26 @@ def mark_stage(job: dict[str, Any], stage: str, *, status: str, artifacts: dict[
     pipeline["status"] = status
 
 
+def vt_shell(action: str, job_dir: Path | None = None, *, source: str | None = None, lang: str = "auto") -> str:
+    """Canonical Hermes command — agents should run this string as-is."""
+    skill = "${HERMES_SKILL_DIR}"
+    base = f'python3 "{skill}/scripts/vt.py"'
+    if action == "preflight":
+        return f"{base} preflight"
+    if action == "prepare":
+        src = source or "<URL-or-path>"
+        return f'{base} prepare "{src}" --lang {lang}'
+    if action == "continue":
+        if job_dir is None:
+            raise ValueError("continue requires job_dir")
+        return f'{base} continue "{job_dir}"'
+    if action == "status":
+        if job_dir is None:
+            raise ValueError("status requires job_dir")
+        return f'{base} status "{job_dir}"'
+    raise ValueError(f"unknown vt action {action}")
+
+
 def stage_payload(
     *,
     status: str,
@@ -210,26 +230,24 @@ def stage_payload(
         "next_stage": nxt,
         "next_action": "",
     }
+    continue_cmd = vt_shell("continue", job_dir)
     if status == "completed":
         payload["user_hint"] = (spec.user_hint_done if spec else message)
         if nxt:
-            payload["next_action"] = "report_user_hint_then_run_next_stage"
-            payload["next_command"] = (
-                f'python3 "${{HERMES_SKILL_DIR}}/scripts/translate_video.py" '
-                f'--stage {nxt} --job-dir "{job_dir}"'
-            )
+            payload["next_action"] = "report_user_hint_then_run_continue"
+            payload["next_command"] = continue_cmd
         else:
             payload["next_action"] = "report_success_to_user"
     elif status == "in_progress":
         payload["user_hint"] = ""  # do not chat mid-stage / mid-Demucs
-        payload["next_action"] = "immediately_call_same_stage_again"
-        payload["tick_command"] = tick_command or (
-            f'python3 "${{HERMES_SKILL_DIR}}/scripts/translate_video.py" '
-            f'--stage {stage} --job-dir "{job_dir}"'
-        )
+        payload["next_action"] = "immediately_run_continue"
+        payload["tick_command"] = tick_command or continue_cmd
+        payload["next_command"] = continue_cmd
     elif status == "failed":
-        payload["next_action"] = "report_failure_to_user"
+        payload["next_action"] = "run_continue_once_then_report_if_still_failed"
         payload["user_hint"] = message
+        payload["next_command"] = continue_cmd
+        payload["retry_command"] = continue_cmd
     if extra:
         payload.update(extra)
     return payload

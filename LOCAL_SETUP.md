@@ -74,7 +74,7 @@ hermes skills install https://raw.githubusercontent.com/kamjin3086/pyvideotrans/
 帮我使用 skill 翻译这个视频：https://www.youtube.com/watch?v=FhTjL1FxRUs
 ```
 
-skill 由 agent 按 `--stage` 编排：预检、下载、Demucs 分离、识别、串行中译、配音合成、成片校验。长阶段可 `in_progress` 续等。默认输出到 `~/Videos/translated-videos/<视频ID>/`。
+skill 默认通过 `scripts/vt.py` 编排：`preflight` → `prepare <URL>` → 循环 `continue <job_dir>`，直至校验完成。长阶段可返回 `in_progress`。默认输出到 `~/Videos/translated-videos/<视频ID>/`。
 
 源语言默认自动识别，也可以明确指定 `--source-language en|ja|ko|fr|de|es|it|pt|ru`。该轻量工作流只正式支持英语、日语、韩语、法语、德语、西班牙语、意大利语、葡萄牙语和俄语，不会为了冷门语言自动安装额外模型。
 

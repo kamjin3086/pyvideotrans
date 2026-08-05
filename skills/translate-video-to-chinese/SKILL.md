@@ -5,98 +5,84 @@ description: Download a common-language YouTube or other yt-dlp-compatible video
 
 # Translate Video to Chinese
 
-Orchestrate the repository workflow as **discrete stages**. Do not wrap the whole pipeline in one opaque command. Keep translation serial, use Qwen TTS CLI, preserve Demucs `no_vocals`, replace vocals only, and hard-burn Simplified Chinese subtitles.
+Use the **`vt.py` façade** only. It hides `--stage` / `--job-dir` / `--budget-seconds` / cache flags. Run **one terminal call at a time**, read `[stage]` JSON, then either tell the user one short `user_hint` or immediately run the printed `next_command` / `continue`.
 
-## Why stages (not one mega-script)
+Do not hand-assemble `translate_video.py --stage …` unless debugging. Do not call `run_cli_local.sh` directly. Do not raise Hermes timeouts.
 
-Hermes foreground terminals are hard-capped near **600s**. A single worker also leaves the user staring at a spinner with no idea whether download, Demucs, STT, translate, or dub is running. The agent therefore:
-
-1. Runs **one `--stage` at a time**.
-2. On `status=completed`, briefly tells the user the `user_hint` (one short line), then starts the next stage.
-3. On `status=in_progress`, **immediately** re-runs the **same** stage (no chat, no search) — long stages tick under the 600s cap.
-4. Never raises Hermes `TERMINAL_MAX_FOREGROUND_TIMEOUT` and never uses `--full` from Hermes.
-
-## Stage order
-
-| Stage | Purpose | May return `in_progress`? |
-|---|---|---|
-| `preflight` | deps / models / LLM | no |
-| `prepare` | metadata + download → `job.json` | no |
-| `separate` | Demucs + demux | **yes** (GPU quiet — no mid-stage chat) |
-| `recognize` | STT | yes |
-| `translate` | Chinese subtitles | yes |
-| `dub` | TTS + align + mux | yes |
-| `validate` | AV / background checks | no |
-
-`dub` includes assemble in one process (TTS queue state). Report it as “配音与合成”.
-
-## Required agent loop
-
-1. Extract one URL or local path; ask if missing.
-2. Map an explicit language to `en|ja|ko|fr|de|es|it|pt|ru`, else `auto`.
-3. Optional opening line once: 「开始分阶段转译；人声分离和翻译/配音可能较久，阶段之间会简短汇报。」
-4. Run stages in order. Prefer `job_directory` / `next_command` from JSON.
+## Canonical commands
 
 ```bash
-python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --stage preflight
-python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --stage prepare "<URL>" --source-language <code-or-auto>
-python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --stage separate --job-dir "<job_directory>"
-# … recognize → translate → dub → validate
+VT="${HERMES_SKILL_DIR}/scripts/vt.py"
+
+python3 "$VT" preflight
+python3 "$VT" prepare "<URL-or-local-path>" --lang auto
+python3 "$VT" continue "<job_directory>"
 ```
 
-5. After each terminal call, read `[stage]` JSON:
-   - `completed` → quote `user_hint` to the user (one line), then run `next_command` / `next_stage`.
-   - `in_progress` → run `tick_command` / same `--stage --job-dir` immediately; **do not** chat.
-   - `failed` → read `message` / `log_tail`. For transient stage failures, re-run the **same** `--stage --job-dir` once (soft resume). Use `--force` only if the user asked for a clean wipe. If it fails again, stop and report.
-6. On final `validate` completed, report `final_video`, `job_directory`, and manifest.
+Optional: `prepare … --lang en|ja|ko|fr|de|es|it|pt|ru` when the user names a language. Cookies only after explicit consent: `prepare URL --cookies chrome`.
 
-### Hermes tool shape
+## Agent loop (copy this)
+
+1. Extract one URL/path; ask if missing.
+2. Optional once: 「开始分阶段转译；人声分离和翻译/配音可能较久，阶段之间会简短汇报。」
+3. `vt.py preflight` → on completed, quote `user_hint`, substitute the URL into `next_command` / run `prepare`.
+4. After `prepare` completes, keep the `job_directory` from JSON.
+5. Loop **`vt.py continue "<job_directory>"`** until JSON has `stage=validate` and `status=completed` (or a second consecutive `failed` for the same stage).
+6. After each call:
+   - `completed` + `next_command` → one-line `user_hint` to user, then run that command.
+   - `in_progress` → **immediately** run `next_command` / `continue` again; **no chat**.
+   - `failed` → run `continue` **once** more; if still failed, stop and report `message` / `log_tail`.
+7. Final success: report `final_video`, `job_directory`, manifest. Do not claim success on exit code alone.
+
+Hermes `terminal`: `background=false`; omit `timeout` or use ≤560. Never `timeout=3600/6000`, never `background=true`.
+
+## Do / Don't
+
+### Do
 
 ```text
-terminal(command='python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --stage <name> ...', background=false)
+# ✔ after prepare JSON gave job_directory
+terminal(command='python3 "${HERMES_SKILL_DIR}/scripts/vt.py" continue "/home/…/translated-videos/VIDEO_ID"', background=false)
+
+# ✔ in_progress → same continue, no other tools
+terminal(command='python3 "${HERMES_SKILL_DIR}/scripts/vt.py" continue "/home/…/translated-videos/VIDEO_ID"', background=false)
+
+# ✔ named language
+terminal(command='python3 "${HERMES_SKILL_DIR}/scripts/vt.py" prepare "https://youtu.be/xxxx" --lang ja', background=false)
 ```
 
-- Omit `timeout`, or pass **≤ 600** (e.g. 560). Never pass 3600/6000.
-- Do **not** use `background=true` or `process(poll|wait|log)`.
-- Do **not** call `run_cli_local.sh` directly or invent alternate scripts.
-- Do **not** pass `--force` unless the user asked for a clean rerun.
-- Between `in_progress` ticks of `separate`, stay silent so Demucs keeps the GPU.
+### Don't
 
-## Reporting rules (stability first)
+```text
+# ✘ hand-splicing stage flags / inventing CLI
+python3 …/translate_video.py --stage recognize --job-dir … --budget-seconds 480 --no-clear-cache
 
-- **Do** report at stage boundaries using `user_hint`.
-- **Do not** narrate every tick or every subtitle batch.
-- **Do not** send progress chats during `separate` / other `in_progress` waits.
-- One short opening summary is enough before `prepare`.
+# ✘ one-shot mega run from Hermes
+python3 …/translate_video.py --full URL
+python3 …/run_cli_local.sh --task vtv …
+
+# ✘ mid-stage chatter / search while Demucs or continue is running
+# ✘ timeout=6000 / background=true / process poll loops
+# ✘ --force unless the user asked for a clean rerun
+# ✘ exploring / redesigning scripts after a single failure — run continue once, then report
+```
+
+## Stages (for awareness only)
+
+`preflight → prepare → separate → recognize → translate → dub → validate`
+
+`continue` chooses tick-vs-advance. Long stages may return `in_progress`. `separate` is GPU-sensitive: stay silent between continues. `dub` includes mux; tell the user “配音与合成”.
 
 ## Dependencies
 
-Preflight is read-only: no auto-install, no large downloads, no restarting the shared TTS server on `18081`.
-
-```bash
-python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --stage preflight
-# equivalent:
-python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --preflight-only
-```
-
-If preflight fails, quote missing paths/sizes and ask permission before installing.
-
-## Common cases
-
-- One URL at a time; playlist URLs → that single video.
-- Supported languages only: `auto,en,ja,ko,fr,de,es,it,pt,ru`.
-- Cookies only after explicit user browser choice: `--cookies-from-browser chrome`.
-- Resume is default (`--no-clear-cache`). Existing stage artifacts are skipped.
-- Success requires `validate` JSON `status=completed` and `final_video`, not merely exit code 0.
-- Local debugging may use `--full`. Hermes must not.
+`preflight` is read-only. If it fails, quote missing paths/sizes and ask before installing. Keep deps in the project `.venv`. Do not stop the shared TTS server on `18081`.
 
 ## Deliverables
 
-Job dir `~/Videos/translated-videos/<video-id>/` (override with `--output-root`):
+`~/Videos/translated-videos/<video-id>/` (or `--output-root`):
 
-- `source/`, `result/` (`vocal.wav`, `instrument.wav`, `zh-cn.srt`, final MP4, voice plans)
-- `job.json` (includes `pipeline.stages` checkpoints)
-- `workflow.log`, `worker.log`, `runtime.json`, `worker.pid`
-- `workcache/`: stable per-job pyVideoTrans cache (shared across stage workers; do not delete mid-run)
+- `source/`, `result/` (stems, `zh-cn.srt`, final MP4, voice plans)
+- `job.json` (`pipeline.stages`), `workcache/` (stable cache — do not delete mid-run)
+- `workflow.log`, `worker.log`, `runtime.json`
 
-Treat `final_video` from a completed `validate` stage as authoritative.
+Authoritative success: `validate` JSON `status=completed` with `final_video`.

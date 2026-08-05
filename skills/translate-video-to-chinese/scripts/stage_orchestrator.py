@@ -534,10 +534,6 @@ def orchestrate_stage(
             stage=stage,
             job_dir=job_dir,
             message=f"stage {stage} still running",
-            tick_command=(
-                f'python3 "{script_path}" --stage {stage} --job-dir "{job_dir}" '
-                f"--budget-seconds {int(budget_seconds)}"
-            ),
             extra={
                 "worker_alive": bool(waited.get("worker_alive")),
                 "worker_pid": job_runtime.read_worker_pid(job_dir),

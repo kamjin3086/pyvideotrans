@@ -1148,11 +1148,12 @@ def main() -> int:
                         "stage": "preflight",
                         "message": "preflight ok",
                         "next_stage": "prepare",
-                        "next_action": "report_user_hint_then_run_next_stage",
+                        "next_action": "report_user_hint_then_run_prepare",
                         "user_hint": "环境已就绪，开始准备源视频。",
-                        "next_command": (
-                            f'python3 "${{HERMES_SKILL_DIR}}/scripts/translate_video.py" '
-                            f'--stage prepare "<URL-or-path>" --source-language {args.source_language}'
+                        "next_command": pipeline_stages.vt_shell(
+                            "prepare",
+                            source="<URL-or-path>",
+                            lang=args.source_language,
                         ),
                     }
                 )
