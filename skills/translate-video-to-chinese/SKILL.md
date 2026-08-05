@@ -5,7 +5,7 @@ description: Download a common-language YouTube or other yt-dlp-compatible video
 
 # Translate Video to Chinese
 
-Use the **`vt.py` façade** only. It hides `--stage` / `--job-dir` / `--budget-seconds` / cache flags. Run **one terminal call at a time**, read `[stage]` JSON, then either tell the user one short `user_hint` or immediately run the printed `next_command` / `continue`.
+Use the **`vt.py` facade** only. It hides `--stage` / `--job-dir` / `--budget-seconds` / cache flags. Run **one terminal call at a time**, read `[stage]` JSON, then either tell the user one short `user_hint` or immediately run the printed `next_command` / `continue`.
 
 Do not hand-assemble `translate_video.py --stage …` unless debugging. Do not call `run_cli_local.sh` directly. Do not raise Hermes timeouts.
 
