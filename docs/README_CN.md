@@ -25,7 +25,7 @@
 
 - **环境与用法**：见 [`LOCAL_SETUP.md`](../LOCAL_SETUP.md)（Faster-Whisper CPU、本地 Qwen `:8101`、Demucs 分轨、Hermes `qwen-tts` CLI，不占用共享 TTS 服务）。
 - **Hermes skill**：[`skills/translate-video-to-chinese/`](../skills/translate-video-to-chinese/) — 由 agent 按阶段编排（`preflight` → `prepare` → `separate` → `recognize` → `translate` → `dub` → `validate`），阶段边界简短汇报，长阶段可续等且适配 Hermes 前台约 600s 限制。
-- **仓库内增量**：Demucs stem 能量校验与重试、片级风格 + 逐句声线路由、`assets/voices/` 克隆音色、`start_local.py` / `run_cli_local.sh`、CLI `--vtv-stage`。
+- **仓库内增量**：Demucs stem 能量校验与重试、片级风格 + 逐句声线路由、`assets/voices/` 克隆音色、`start_local.py` / `run_cli_local.sh`、CLI `--vtv-stage` / `--cache-folder`（跨进程阶段复用 `job/workcache`）。
 
 未走上述本地路径时，行为与上游一致。
 

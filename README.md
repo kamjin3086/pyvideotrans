@@ -25,7 +25,7 @@ This fork keeps upstream pyVideoTrans and adds a **local AMD / Hermes** profile 
 
 - **Setup**: [`LOCAL_SETUP.md`](LOCAL_SETUP.md) — Faster-Whisper (CPU), local Qwen on `:8101`, Demucs stems, Hermes `qwen-tts` CLI (not the shared TTS server).
 - **Hermes skill**: [`skills/translate-video-to-chinese/`](skills/translate-video-to-chinese/) — agent-orchestrated stages (`preflight` → `prepare` → `separate` → `recognize` → `translate` → `dub` → `validate`), short progress at stage boundaries, per-stage resume under Hermes’ ~600s tool cap.
-- **Extras in-tree**: Demucs stem energy checks/retry, video-wide style + per-cue gender voice routing, clone voice assets under `assets/voices/`, `start_local.py` / `run_cli_local.sh`, `--vtv-stage` on the CLI.
+- **Extras in-tree**: Demucs stem energy checks/retry, video-wide style + per-cue gender voice routing, clone voice assets under `assets/voices/`, `start_local.py` / `run_cli_local.sh`, `--vtv-stage` / `--cache-folder` for multi-process stage resume (`job/workcache`).
 
 Upstream GUI/CLI behavior is unchanged unless you opt into this local path.
 
