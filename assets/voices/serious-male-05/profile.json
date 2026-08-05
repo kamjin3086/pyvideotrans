@@ -14,11 +14,11 @@
   "model_variant": "Qwen3-TTS-12Hz-1.7B-Base",
   "clone_mode": "icl",
   "sample_rate": 24000,
-  "reference_duration_seconds": 13.5,
+  "reference_duration_seconds": 1.57,
   "speaker_embedding_dimensions": 2048,
   "rvq_codebooks": 16,
   "rvq_frames": 168,
-  "reference_mean_volume_db": -17.1,
+  "reference_mean_volume_db": -17.5,
   "reference_peak_volume_db": -1.8,
   "assets": {
     "speaker_embedding": "reference.spk",
@@ -26,9 +26,10 @@
     "reference_transcript": "reference.txt"
   },
   "sha256": {
-    "reference.spk": "96c53726cdb1f738d0cd7284f3328262fa2549bddb816fad460449f99ec8a124",
-    "reference.rvq": "b218cd43212b7fdf68db8d07b0fe46b8695d8c020ae1fe8c5548b34dc7644145",
-    "reference.txt": "0f8e8b2c982f5735ce3a431b1ebbf3b8ed447dbefd18d8deaf5365436ead8be2"
+    "reference.spk": "d282bdf1474c53dfce261675528c18656267a09378969610a916988e1f331afb",
+    "reference.rvq": "7d81585de14eb8b1b0b14e475cc6e1cd37a58181802c520c45cf319300f3122f",
+    "reference.txt": "eaae15ab762e65a330974c55ba72ba4c786d0a2dcc5a6e45252599e8fa0d6764",
+    "reference.wav": "c23e632bd3350134222037b702dd9109037d1f864b2e1131ecd3feb4d3a92ba9"
   },
   "verification": {
     "status": "passed",
@@ -37,5 +38,13 @@
     "seed": 42,
     "temperature": 0.62,
     "top_p": 0.9
+  },
+  "source_audition": "source-audition.mp3",
+  "reference_clip": {
+    "from_source": "12-男中音-很舒适-很合适.mp3",
+    "clip_text": "只需要更强的意志。",
+    "clip_start_seconds": 3.05,
+    "clip_end_seconds": 4.62,
+    "note": "Full 14.58s audition is kept as source-audition.mp3; ICL uses the trimmed single clause only."
   }
 }

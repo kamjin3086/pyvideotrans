@@ -158,7 +158,8 @@ export PYVIDEOTRANS_QWENTTS_CODEC=.../qwen-tokenizer-12hz-Q8_0.gguf
 
 Ensure these exist in the clone (normally committed or shipped with the fork):
 
-- `assets/voices/serious-male-05/{reference.spk,reference.rvq,reference.txt}`
+- `assets/voices/serious-male-05/{reference.spk,reference.rvq,reference.txt,source-audition.mp3}`
+- ICL clone uses a **~1.5s trimmed clause** (`只需要更强的意志。`), not the full ~14.5s audition; see `profile.json` → `reference_clip`.
 - `assets/voices/gender-router/{male.spk,female.spk,profile.json}`
 - `assets/voices/female-styles/female-01` … `female-10` + `profile.json` + `reference.txt`
 

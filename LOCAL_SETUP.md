@@ -40,7 +40,7 @@ Demucs 与 localhost:8101 的本地 Qwen **共用同一块 AMD GPU**。不要在
 
 TTS 不调用或修改共享的 18081 `tts-server`。本项目通过 `qwen-tts --stream-by-line` 批量生成整份字幕，并使用固定随机种子和采样参数。默认 `--voice-profile auto` 会通过 localhost:8101 的 Qwen 串行判断内容类型：轻松、娱乐、生活、新闻、资讯类选择带北京口音轻松感的 `dylan`；纪录片、知识、心理、历史、科学、教育、严肃叙事或无法判断时，选择 `assets/voices/serious-male-05` 中预提取的 2048 维说话人嵌入和 ICL 参考编码。
 
-可用 `--voice-profile dylan` 或 `--voice-profile serious-male-05` 强制指定。后者使用本机已经存在的 `qwen-talker-1.7b-base-Q8_0.gguf`（约 2 GB）和 Q8 codec；本次没有下载新模型。音色包运行时只需要仓库中的 `.spk`、`.rvq` 和参考文本，不依赖原始试听 MP3，也不会修改 `hermes-tts-lab`。
+可用 `--voice-profile dylan` 或 `--voice-profile serious-male-05` 强制指定。后者使用本机已经存在的 `qwen-talker-1.7b-base-Q8_0.gguf`（约 2 GB）和 Q8 codec；本次没有下载新模型。音色包运行时只需要仓库中的 `.spk`、`.rvq` 和短句 `reference.txt`（约 1.5s ICL 切片，见 `profile.json` 的 `reference_clip`）；完整试听保存在 `source-audition.mp3` 作溯源，不参与合成。
 
 自动配音采用两级路由，不安装 pyannote、PyTorch 或额外性别模型。STT 完成后，本地 Qwen 根据视频元数据和全片转录抽样串行分类一次，从 10 种内容风格中选择一套固定男女音色；结果写入 `voice-style-plan.json`。随后 Demucs 得到原始人声轨，项目按字幕时间段调用同一套 `qwen-codec` speaker encoder，并与仓库中两个 8 KB 的男女声线原型比较；明确女性声线使用该视频选定的 `female-01` 至 `female-10` 固定克隆音色，明确男性声线使用 Dylan 或 `serious-male-05`，短片段、重叠人声、噪声或低置信度片段保持默认。逐句结果写入 `voice-routing.json`。这里判断的是声学呈现，不是说话人的性别身份。设置 `PYVIDEOTRANS_AUTO_VOICE_STYLE=0` 可关闭视频风格选择，设置 `PYVIDEOTRANS_AUTO_VOICE_GENDER=0` 可关闭逐句男女声路由。
 

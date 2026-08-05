@@ -4,10 +4,11 @@
 
 - `reference.spk`：Qwen Base speaker encoder 提取的 2048 维说话人嵌入。
 - `reference.rvq`：参考语音的 16-codebook、168 帧声学编码。
-- `reference.txt`：与参考编码严格对应的中文文本，用于 ICL 克隆。
+- `reference.txt`：与参考编码严格对应的中文文本，用于 ICL 克隆（当前为截取的短句 `只需要更强的意志。`）。
+- `source-audition.mp3`：完整试听源文件（约 14.5s，多句停顿）；**不要整段直接当 ICL 参考**。
 - `profile.json`：音色用途、提取参数、校验结果和文件哈希。
 
-运行时不需要原始 MP3 或 WAV。工作流使用已有的
+运行时不需要原始 MP3；`reference.wav` 仅为 1.5s 左右的干净单句切片。工作流使用已有的
 `qwen-talker-1.7b-base-Q8_0.gguf` 和 `qwen-tokenizer-12hz-Q8_0.gguf`，通过
 `qwen-tts --ref-spk --ref-rvq --ref-text` 直接复用预提取音色，不启动共享 TTS 服务。
 
