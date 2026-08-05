@@ -5,7 +5,9 @@ description: Download a common-language YouTube or other yt-dlp-compatible video
 
 # Translate Video to Chinese
 
-Use the **`vt.py` facade** only. It hides `--stage` / `--job-dir` / `--budget-seconds` / cache flags. Run **one terminal call at a time**, read `[stage]` JSON, then either tell the user one short `user_hint` or immediately run the printed `next_command` / `continue`.
+Use the **`vt.py` façade** only. It hides `--stage` / `--job-dir` / `--budget-seconds` / cache flags. Run **one terminal call at a time**, read `[stage]` JSON, then either tell the user one short `user_hint` or immediately run the printed `next_command` / `continue`.
+
+**New machine / first bring-up:** see **[ENVIRONMENT.md](ENVIRONMENT.md)** (checklist, reference stack, env vars). Every run starts with read-only `vt.py preflight`; it reports gaps but does **not** auto-install. Get permission before large downloads.
 
 Do not hand-assemble `translate_video.py --stage …` unless debugging. Do not call `run_cli_local.sh` directly. Do not raise Hermes timeouts.
 
@@ -75,7 +77,7 @@ python3 …/run_cli_local.sh --task vtv …
 
 ## Dependencies
 
-`preflight` is read-only. If it fails, quote missing paths/sizes and ask before installing. Keep deps in the project `.venv`. Do not stop the shared TTS server on `18081`.
+`preflight` is read-only. If it fails, open [ENVIRONMENT.md](ENVIRONMENT.md), quote missing paths/sizes from the JSON/log, and ask permission before installing. Keep Python deps in the project `.venv`. Do not stop the shared TTS server on `18081`.
 
 ## Deliverables
 

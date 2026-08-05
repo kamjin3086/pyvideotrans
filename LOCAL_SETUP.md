@@ -78,7 +78,7 @@ skill 默认通过 `scripts/vt.py` 编排：`preflight` → `prepare <URL>` → 
 
 源语言默认自动识别，也可以明确指定 `--source-language en|ja|ko|fr|de|es|it|pt|ru`。该轻量工作流只正式支持英语、日语、韩语、法语、德语、西班牙语、意大利语、葡萄牙语和俄语，不会为了冷门语言自动安装额外模型。
 
-预检不会自动安装依赖或下载大模型。若缺少 Faster-Whisper、Qwen TTS 或 Demucs 资源，它会先停止并报告缺失项和大致体积，避免未经确认占用磁盘或修改其他项目。
+预检不会自动安装依赖或下载大模型。若缺少 Faster-Whisper、Qwen TTS 或 Demucs 资源，它会先停止并报告缺失项和大致体积，避免未经确认占用磁盘或修改其他项目。新机完整搭建清单见 skill 旁的 [`skills/translate-video-to-chinese/ENVIRONMENT.md`](skills/translate-video-to-chinese/ENVIRONMENT.md)。
 
 也可以在仓库内直接检查环境：
 
