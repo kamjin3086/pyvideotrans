@@ -17,6 +17,7 @@ Usage examples:
 
 import asyncio
 import multiprocessing
+import os
 import sys
 import re
 import argparse
@@ -369,6 +370,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help=tr("help_list"))
     parser.add_argument('--output-dir', type=str, default=None,
                         help=tr("help_output_dir"))
+    parser.add_argument(
+        '--cache-folder',
+        type=str,
+        default=None,
+        help='Stable per-job cache directory (defaults to tmp/<pid>/<uuid>). '
+             'Required for multi-process / multi-stage resume.',
+    )
     parser.add_argument('--log-level', type=str, default='WARNING',
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                         help=tr("help_log_level"))
@@ -459,7 +467,16 @@ def build_common_params(args: argparse.Namespace, output_dir: Optional[str] = No
 
     _file_obj = tools.format_video(Path(args.name).absolute().as_posix())
     _nospacebasename = re.sub(r'[\s. #*?!:"]', '-', _file_obj["basename"])
-    _cache_folder = f'{TEMP_DIR}/{_file_obj["uuid"]}'
+
+    explicit_cache = getattr(args, 'cache_folder', None) or os.getenv('PYVIDEOTRANS_CACHE_FOLDER')
+    if explicit_cache:
+        _cache_folder = str(Path(explicit_cache).expanduser().resolve())
+        # STT/TTS subprocess logs still use TEMP_DIR/<uuid>/…. Point TEMP_DIR
+        # at the stable job cache so stage workers stop looking under tmp/<pid>.
+        from videotrans.configure import config as _cfg
+        _cfg.TEMP_DIR = _cache_folder
+    else:
+        _cache_folder = f'{TEMP_DIR}/{_file_obj["uuid"]}'
 
     if output_dir:
         _target_dir = str(Path(output_dir).absolute())
@@ -472,6 +489,7 @@ def build_common_params(args: argparse.Namespace, output_dir: Optional[str] = No
     common_params.update(asdict(_file_obj))
 
     Path(_cache_folder).mkdir(parents=True, exist_ok=True)
+    Path(f'{_cache_folder}/{_file_obj["uuid"]}').mkdir(parents=True, exist_ok=True)
     Path(_target_dir).mkdir(parents=True, exist_ok=True)
 
     return common_params

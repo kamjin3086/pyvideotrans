@@ -31,8 +31,9 @@ def build_vtv_command(
     voice_role: str,
     cli_stage: str,
     force: bool,
+    cache_folder: Path | None = None,
 ) -> list[str]:
-    return [
+    command = [
         str(config["run_cli"]),
         "--task",
         "vtv",
@@ -65,6 +66,78 @@ def build_vtv_command(
         cli_stage,
         "--clear_cache" if force else "--no-clear-cache",
     ]
+    if cache_folder is not None:
+        command.extend(["--cache-folder", str(cache_folder)])
+    return command
+
+
+def workcache_dir(job_dir: Path) -> Path:
+    """Stable cache shared by all stage workers for one job.
+
+    Upstream TEMP_DIR embeds os.getpid(), so each detached stage otherwise
+    starts with an empty cache and recognize fails looking for source_wav.
+    """
+    path = job_dir / "workcache"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def hydrate_workcache(
+    *,
+    job_dir: Path,
+    result_dir: Path,
+    source_language: str,
+    ffmpeg: Path | str | None = None,
+) -> dict[str, str]:
+    """Ensure workcache has vocal/instrument/source wav regenerated from result/.
+
+    Safe to call before recognize/translate/dub so mid-pipeline retries work
+    even if an older process used a pid-scoped tmp dir.
+    """
+    import shutil
+    import subprocess
+
+    cache = workcache_dir(job_dir)
+    notes: dict[str, str] = {"cache_folder": str(cache)}
+    for name in ("vocal.wav", "instrument.wav"):
+        src = result_dir / name
+        dst = cache / name
+        if src.is_file() and src.stat().st_size > 1000:
+            if (not dst.is_file()) or dst.stat().st_size != src.stat().st_size:
+                shutil.copy2(src, dst)
+            notes[name] = str(dst)
+
+    source_wav = cache / f"{source_language or 'auto'}.wav"
+    vocal = cache / "vocal.wav"
+    if vocal.is_file() and (
+        not source_wav.is_file() or source_wav.stat().st_size < 1000
+    ):
+        ff = shutil.which(str(ffmpeg)) if ffmpeg else shutil.which("ffmpeg")
+        if not ff:
+            raise RuntimeError("hydrate_workcache: ffmpeg not found")
+        cmd = [
+            ff,
+            "-y",
+            "-i",
+            str(vocal),
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "pcm_s16le",
+            str(source_wav),
+        ]
+        proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode or not source_wav.is_file() or source_wav.stat().st_size < 1000:
+            raise RuntimeError(
+                "hydrate_workcache: failed to build source wav from vocal.wav: "
+                + (proc.stderr or proc.stdout or "")[-1500:]
+            )
+        notes["source_wav"] = str(source_wav)
+    elif source_wav.is_file():
+        notes["source_wav"] = str(source_wav)
+    return notes
 
 
 def run_cli_stage(
@@ -81,6 +154,7 @@ def run_cli_stage(
     force: bool,
     run_logged: RunLoggedFn,
     translation_environment: EnvFn,
+    cache_folder: Path | None = None,
 ) -> None:
     command = build_vtv_command(
         config,
@@ -90,6 +164,7 @@ def run_cli_stage(
         voice_role=voice_role,
         cli_stage=cli_stage,
         force=force,
+        cache_folder=cache_folder,
     )
     run_logged(
         command,
@@ -134,6 +209,18 @@ def execute_cli_stage_in_process(
         job["force"] = False
         write_manifest(ctx["manifest_path"], job)
 
+    cache_folder = workcache_dir(job_dir)
+    # Post-separate stages need source_wav inside the stable cache. Hydrate from
+    # result/ so retries still work after an older pid-scoped tmp run.
+    if stage in {"recognize", "translate", "dub"}:
+        notes = hydrate_workcache(
+            job_dir=job_dir,
+            result_dir=ctx["result_dir"],
+            source_language=ctx["source_language"],
+            ffmpeg=config.get("ffmpeg"),
+        )
+        print(f"[stage] hydrated workcache for {stage}: {notes}")
+
     job_runtime.write_runtime(
         job_dir,
         {
@@ -142,6 +229,7 @@ def execute_cli_stage_in_process(
             "phase": stage,
             "worker_pid": os.getpid(),
             "message": f"running stage {stage}",
+            "cache_folder": str(cache_folder),
             "heartbeat_at": now_iso(),
         },
     )
@@ -158,6 +246,7 @@ def execute_cli_stage_in_process(
         force=wipe,
         run_logged=run_logged,
         translation_environment=translation_environment,
+        cache_folder=cache_folder,
     )
     _ready, artifacts = stages.stage_artifacts_ready(
         stage,
@@ -255,7 +344,11 @@ def ensure_stage_worker(
     if same_stage and runtime.get("status") == "completed" and not force:
         return runtime
     if same_stage and runtime.get("status") == "failed" and not force and not alive:
-        return runtime
+        # Soft retry: a previous stage worker failed (often empty pid-scoped
+        # cache). Re-invoking the same --stage should resume, not stick on the
+        # stale failed runtime forever.
+        print(f"[stage] 上次 {stage} 失败，将 resume 重试（不加 --force 清缓存）")
+        runtime = {}
     if alive and same_stage:
         print(f"[stage] 复用运行中的 {stage} worker pid={pid}")
         return runtime

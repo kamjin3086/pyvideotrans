@@ -703,6 +703,10 @@ def run_translation(
     # the opposite; only --force may wipe.
     command.append("--clear_cache" if force else "--no-clear-cache")
     command.extend(["--vtv-stage", "all"])
+    # Keep --full on the same stable cache layout as staged runs.
+    cache_folder = result_dir.parent / "workcache"
+    cache_folder.mkdir(parents=True, exist_ok=True)
+    command.extend(["--cache-folder", str(cache_folder)])
     run_logged(
         command,
         log_path,

@@ -47,7 +47,7 @@ python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --stage separate --job-
 5. After each terminal call, read `[stage]` JSON:
    - `completed` → quote `user_hint` to the user (one line), then run `next_command` / `next_stage`.
    - `in_progress` → run `tick_command` / same `--stage --job-dir` immediately; **do not** chat.
-   - `failed` → stop; report `message` / `log_tail`.
+   - `failed` → read `message` / `log_tail`. For transient stage failures, re-run the **same** `--stage --job-dir` once (soft resume). Use `--force` only if the user asked for a clean wipe. If it fails again, stop and report.
 6. On final `validate` completed, report `final_video`, `job_directory`, and manifest.
 
 ### Hermes tool shape
@@ -97,5 +97,6 @@ Job dir `~/Videos/translated-videos/<video-id>/` (override with `--output-root`)
 - `source/`, `result/` (`vocal.wav`, `instrument.wav`, `zh-cn.srt`, final MP4, voice plans)
 - `job.json` (includes `pipeline.stages` checkpoints)
 - `workflow.log`, `worker.log`, `runtime.json`, `worker.pid`
+- `workcache/`: stable per-job pyVideoTrans cache (shared across stage workers; do not delete mid-run)
 
 Treat `final_video` from a completed `validate` stage as authoritative.

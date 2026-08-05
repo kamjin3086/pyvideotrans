@@ -19,6 +19,15 @@
 
 **pyVideoTrans** is dedicated to seamlessly converting videos from one language to another, offering a complete workflow that includes speech recognition, subtitle translation, multi-role dubbing, and audio-video synchronization. It supports both local offline deployment and a wide variety of mainstream online APIs.
 
+### Fork notes (`kamjin3086/pyvideotrans`)
+
+This fork keeps upstream pyVideoTrans and adds a **local AMD / Hermes** profile for hands-off “URL → Chinese dubbed video” runs:
+
+- **Setup**: [`LOCAL_SETUP.md`](LOCAL_SETUP.md) — Faster-Whisper (CPU), local Qwen on `:8101`, Demucs stems, Hermes `qwen-tts` CLI (not the shared TTS server).
+- **Hermes skill**: [`skills/translate-video-to-chinese/`](skills/translate-video-to-chinese/) — agent-orchestrated stages (`preflight` → `prepare` → `separate` → `recognize` → `translate` → `dub` → `validate`), short progress at stage boundaries, per-stage resume under Hermes’ ~600s tool cap.
+- **Extras in-tree**: Demucs stem energy checks/retry, video-wide style + per-cue gender voice routing, clone voice assets under `assets/voices/`, `start_local.py` / `run_cli_local.sh`, `--vtv-stage` on the CLI.
+
+Upstream GUI/CLI behavior is unchanged unless you opt into this local path.
 
 <img width="1730" height="957" alt="image" src="https://github.com/user-attachments/assets/25d78661-8b73-4f34-a3e5-205c7daba99b" />
 
