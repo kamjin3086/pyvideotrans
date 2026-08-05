@@ -21,6 +21,8 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 import job_runtime  # noqa: E402
+import pipeline_stages  # noqa: E402
+import stage_orchestrator  # noqa: E402
 
 
 DEFAULT_OUTPUT_ROOT = Path.home() / "Videos" / "translated-videos"
@@ -700,6 +702,7 @@ def run_translation(
     # CLI defaults clear_cache=True (wipes target+cache at start). Resume needs
     # the opposite; only --force may wipe.
     command.append("--clear_cache" if force else "--no-clear-cache")
+    command.extend(["--vtv-stage", "all"])
     run_logged(
         command,
         log_path,
@@ -718,9 +721,9 @@ def write_manifest(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def emit_tick_payload(payload: dict[str, Any]) -> None:
-    """Print one machine-readable checkpoint for Hermes to loop on."""
-    print("[tick]")
+
+def emit_stage_payload(payload: dict[str, Any]) -> None:
+    print("[stage]")
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
@@ -803,6 +806,7 @@ def prepare_job_paths(
         },
         "job_directory": str(job_dir),
         "settings": settings,
+        "pipeline": {"stages": {}, "current_stage": "prepare", "status": "prepared"},
         "started_at": now_iso(),
         "log": str(log_path),
     }
@@ -821,264 +825,37 @@ def prepare_job_paths(
     }
 
 
-def completed_payload(
-    *,
+def finalize_completed_job(
+    job: dict[str, Any],
     final_video: Path,
-    job_dir: Path,
-    manifest_path: Path,
     validation: dict[str, Any],
-) -> dict[str, Any]:
-    return {
-        "status": "completed",
-        "phase": "done",
-        "final_video": str(final_video),
-        "job_directory": str(job_dir),
-        "manifest": str(manifest_path),
-        "validation_ok": True,
-        "next_action": "report_success_to_user",
-        "message": "video translation completed",
-        "voice_style": validation.get("voice_style_plan", {}).get("style"),
-        "female_voice": validation.get("voice_style_plan", {}).get("female_voice"),
-    }
-
-
-def finish_job(
-    config: dict[str, Path | str],
     *,
-    source_video: Path,
-    result_dir: Path,
-    log_path: Path,
-    manifest_path: Path,
-    job_dir: Path,
-    video_id: str,
-    source_request: str,
-    metadata: dict[str, Any],
-    source_language: str,
     voice_role: str,
-    voice_profile: str,
-    force: bool,
-    started_at: str,
-) -> tuple[Path, dict[str, Any]]:
-    print(
-        "[translate] 开始转译。Demucs 会使用本机 GPU；worker 期间请避免并发占用同一 GPU 的本地 LLM 长请求。"
-    )
-    job_runtime.write_runtime(
-        job_dir,
-        {
-            "status": "running",
-            "phase": "translate",
-            "worker_pid": os.getpid(),
-            "message": "running pyVideoTrans CLI",
-            "heartbeat_at": now_iso(),
-        },
-    )
-    final_video = run_translation(
-        config,
-        source_video,
-        result_dir,
-        log_path,
-        manifest_path,
-        source_language,
-        voice_role,
-        voice_profile,
-        metadata,
-        force,
-    )
-    job_runtime.write_runtime(
-        job_dir,
-        {
-            "status": "running",
-            "phase": "validate",
-            "worker_pid": os.getpid(),
-            "message": f"validating {final_video}",
-            "heartbeat_at": now_iso(),
-        },
-    )
-    print(f"[validate] 正在校验成片和背景声：{final_video}")
-    validation = validate_result(final_video, config)
-    manifest: dict[str, Any] = {
-        "status": "completed",
-        "source_request": source_request,
-        "source_video": str(source_video),
-        "video_id": video_id,
-        "title": metadata.get("title"),
-        "final_video": str(final_video),
-        "job_directory": str(job_dir),
-        "settings": {
-            "source_language": source_language,
-            "target_language": "zh-cn",
-            "voice_profile_requested": voice_profile,
-            "voice": validation.get("voice_style_plan", {}).get("male_voice", voice_role),
-            "automatic_video_style_routing": os.getenv("PYVIDEOTRANS_AUTO_VOICE_STYLE", "1") == "1",
-            "video_style": validation.get("voice_style_plan", {}).get("style"),
-            "automatic_acoustic_voice_routing": os.getenv("PYVIDEOTRANS_AUTO_VOICE_GENDER", "1") == "1",
-            "female_voice": validation.get("voice_style_plan", {}).get(
-                "female_voice",
-                os.getenv("PYVIDEOTRANS_QWENTTS_FEMALE_VOICE", "female-01"),
-            ),
-            "llm_api": config["llm_api"],
-            "separation": "demucs two-stems vocals",
-            "subtitles": "hard-burned",
-        },
-        "validation": validation,
-        "started_at": started_at,
-        "completed_at": now_iso(),
-        "log": str(log_path),
-    }
-    write_manifest(manifest_path, manifest)
-    return final_video, validation
-
-
-def run_worker(job_dir: Path, project_dir: str | None) -> int:
-    job_dir = expand(str(job_dir))
-    manifest_path = job_dir / "job.json"
-    if not manifest_path.is_file():
-        raise WorkflowError(f"worker 缺少 job.json：{manifest_path}")
-    try:
-        job = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise WorkflowError(f"无法读取 job.json：{exc}") from exc
-
-    config = preflight(project_dir)
-    settings = job.get("settings") or {}
-    source_video = expand(job["source_video"])
-    result_dir = job_dir / "result"
-    log_path = expand(job.get("log") or str(job_dir / "workflow.log"))
-    metadata = dict(job.get("metadata") or {})
-    if not metadata.get("title"):
-        metadata["title"] = job.get("title")
-    source_language = str(settings.get("source_language") or "auto")
-    voice_profile = str(settings.get("voice_profile_requested") or "auto")
-    voice_role = str(settings.get("voice_role") or resolve_voice_role(voice_profile))
-    force = bool(job.get("force"))
-    started_at = str(job.get("started_at") or now_iso())
-    if force:
-        # Consume one-shot wipe flag so a later reconnect cannot wipe again.
-        job["force"] = False
-        write_manifest(manifest_path, job)
-
-    try:
-        job_runtime.write_runtime(
-            job_dir,
-            {
-                "status": "running",
-                "phase": "worker_running",
-                "worker_pid": os.getpid(),
-                "started_at": started_at,
-                "heartbeat_at": now_iso(),
-                "message": "worker process active",
-            },
-        )
-        final_video, validation = finish_job(
-            config,
-            source_video=source_video,
-            result_dir=result_dir,
-            log_path=log_path,
-            manifest_path=manifest_path,
-            job_dir=job_dir,
-            video_id=str(job.get("video_id") or job_dir.name),
-            source_request=str(job.get("source_request") or source_video),
-            metadata=metadata,
-            source_language=source_language,
-            voice_role=voice_role,
-            voice_profile=voice_profile,
-            force=force,
-            started_at=started_at,
-        )
-        payload = completed_payload(
-            final_video=final_video,
-            job_dir=job_dir,
-            manifest_path=manifest_path,
-            validation=validation,
-        )
-        job_runtime.write_runtime(
-            job_dir,
-            {
-                "status": "completed",
-                "phase": "done",
-                "worker_pid": os.getpid(),
-                "final_video": str(final_video),
-                "message": "completed",
-                "heartbeat_at": now_iso(),
-            },
-        )
-        print("[complete] 视频翻译完成。")
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return 0
-    except Exception as exc:
-        job_runtime.write_runtime(
-            job_dir,
-            {
-                "status": "failed",
-                "phase": "error",
-                "worker_pid": os.getpid(),
-                "message": str(exc),
-                "error": str(exc),
-                "heartbeat_at": now_iso(),
-            },
-        )
-        raise
-
-
-def ensure_worker(
     config: dict[str, Path | str],
-    prepared: dict[str, Any],
-    *,
-    force: bool,
-    script_path: Path,
-) -> dict[str, Any]:
-    job_dir: Path = prepared["job_dir"]
-    manifest_path: Path = prepared["manifest_path"]
-    runtime = job_runtime.read_runtime(job_dir)
-    pid = job_runtime.read_worker_pid(job_dir)
-    alive = bool(pid and job_runtime.pid_is_alive(pid))
-
-    if force:
-        print("[tick] --force：停止旧 worker 并清理后重启")
-        job_runtime.stop_worker(job_dir)
-        job = json.loads(manifest_path.read_text(encoding="utf-8"))
-        job["force"] = True
-        job["status"] = "prepared"
-        job["started_at"] = now_iso()
-        write_manifest(manifest_path, job)
-        alive = False
-        runtime = {}
-
-    if runtime.get("status") == "completed" and not force:
-        return runtime
-    if runtime.get("status") == "failed" and not force and not alive:
-        return runtime
-    if alive:
-        print(f"[tick] 复用运行中的 worker pid={pid}")
-        return runtime
-    if runtime.get("status") == "running" and pid and not alive:
-        print("[tick] worker 异常退出且未写完状态，将以 resume（--no-clear-cache）重启")
-        runtime = {}
-    elif runtime and not alive and runtime.get("status") not in {"completed", "failed", None, ""}:
-        # Stale non-terminal status without a live process.
-        print(f"[tick] 清理陈旧 runtime status={runtime.get('status')!r} 并 resume 重启")
-        runtime = {}
-
-    worker_cmd = [
-        sys.executable,
-        str(script_path),
-        "--worker",
-        "--job-dir",
-        str(job_dir),
-    ]
-    if config.get("project"):
-        worker_cmd.extend(["--project-dir", str(config["project"])])
-    print(f"[tick] 启动分离 worker：{' '.join(worker_cmd)}")
-    job_runtime.start_detached_worker(
-        worker_cmd,
-        job_dir,
-        Path(config["project"]),
-        os.environ.copy(),
+    manifest_path: Path,
+) -> None:
+    job["status"] = "completed"
+    job["final_video"] = str(final_video)
+    job["completed_at"] = now_iso()
+    job["validation"] = validation
+    settings = job.setdefault("settings", {})
+    settings["voice"] = validation.get("voice_style_plan", {}).get("male_voice", voice_role)
+    settings["video_style"] = validation.get("voice_style_plan", {}).get("style")
+    settings["female_voice"] = validation.get("voice_style_plan", {}).get(
+        "female_voice",
+        os.getenv("PYVIDEOTRANS_QWENTTS_FEMALE_VOICE", "female-01"),
     )
-    return job_runtime.read_runtime(job_dir)
+    settings["llm_api"] = config["llm_api"]
+    pipeline_stages.mark_stage(
+        job,
+        "validate",
+        status="completed",
+        artifacts={"final_video": str(final_video)},
+    )
+    write_manifest(manifest_path, job)
 
 
-def run_tick(
+def run_prepare_stage(
     config: dict[str, Path | str],
     *,
     source: str | None,
@@ -1089,115 +866,126 @@ def run_tick(
     source_language: str,
     voice_profile: str,
     force: bool,
-    budget_seconds: float,
-) -> int:
-    script_path = Path(__file__).resolve()
-    if job_dir_arg:
+) -> dict[str, Any]:
+    if job_dir_arg and not force:
         job_dir = expand(job_dir_arg)
-        manifest_path = job_dir / "job.json"
-        if not manifest_path.is_file():
-            raise WorkflowError(f"--job-dir 缺少 job.json：{manifest_path}")
-        job = json.loads(manifest_path.read_text(encoding="utf-8"))
-        prepared = {
-            "job_dir": job_dir,
-            "result_dir": job_dir / "result",
-            "log_path": expand(job.get("log") or str(job_dir / "workflow.log")),
-            "manifest_path": manifest_path,
-            "source_video": expand(job["source_video"]),
-            "video_id": job.get("video_id") or job_dir.name,
-            "metadata": job.get("metadata") or {"title": job.get("title")},
-            "voice_role": (job.get("settings") or {}).get("voice_role") or SERIOUS_VOICE_ROLE,
-            "settings": job.get("settings") or {},
-            "seed_manifest": job,
-        }
-    else:
-        if not source:
-            raise WorkflowError("缺少视频 URL / 本地路径，或 --job-dir。")
-        prepared = prepare_job_paths(
-            config,
-            source,
-            output_root,
-            max_height,
-            cookies_browser,
-            source_language,
-            voice_profile,
-        )
-
-    job_dir = prepared["job_dir"]
-    runtime = ensure_worker(config, prepared, force=force, script_path=script_path)
-    if runtime.get("status") == "completed":
-        job = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
-        final_path = expand(job.get("final_video") or "")
-        if final_path.is_file():
-            payload = completed_payload(
-                final_video=final_path,
+        manifest = job_dir / "job.json"
+        if manifest.is_file():
+            job = json.loads(manifest.read_text(encoding="utf-8"))
+            source_video = expand(job["source_video"])
+            ready, artifacts = pipeline_stages.stage_artifacts_ready(
+                "prepare",
                 job_dir=job_dir,
-                manifest_path=job_dir / "job.json",
-                validation=job.get("validation") or {},
+                result_dir=job_dir / "result",
+                source_video=source_video,
+                source_language=str((job.get("settings") or {}).get("source_language") or "auto"),
             )
-            emit_tick_payload(payload)
-            return 0
-        raise WorkflowError("runtime 标记 completed，但找不到 final_video。")
+            if ready:
+                pipeline_stages.mark_stage(job, "prepare", status="completed", artifacts=artifacts)
+                write_manifest(manifest, job)
+                return pipeline_stages.stage_payload(
+                    status="completed",
+                    stage="prepare",
+                    job_dir=job_dir,
+                    message="source already present",
+                    artifacts=artifacts,
+                )
+    if not source:
+        raise WorkflowError("prepare 阶段需要视频 URL / 本地路径。")
+    prepared = prepare_job_paths(
+        config,
+        source,
+        output_root,
+        max_height,
+        cookies_browser,
+        source_language,
+        voice_profile,
+    )
+    job = prepared["seed_manifest"]
+    artifacts = {"source_video": str(prepared["source_video"])}
+    pipeline_stages.mark_stage(job, "prepare", status="completed", artifacts=artifacts)
+    write_manifest(prepared["manifest_path"], job)
+    return pipeline_stages.stage_payload(
+        status="completed",
+        stage="prepare",
+        job_dir=prepared["job_dir"],
+        message="prepare completed",
+        artifacts=artifacts,
+        extra={"opening_hint": "开始分阶段转译；人声分离和翻译/配音可能较久，阶段之间会简短汇报。"},
+    )
 
-    if runtime.get("status") == "failed":
-        payload = {
-            "status": "failed",
-            "phase": runtime.get("phase") or "error",
-            "job_directory": str(job_dir),
-            "message": runtime.get("message") or runtime.get("error") or "worker failed",
-            "next_action": "report_failure_to_user",
-            "runtime": runtime,
-            "log_tail": job_runtime.tail_text(job_runtime.worker_log_path(job_dir)),
-        }
-        emit_tick_payload(payload)
-        return 2
 
-    print(f"[tick] 等待 worker，预算 {budget_seconds:.0f}s（Hermes 前台硬顶约 600s）……")
-    waited = job_runtime.wait_for_runtime(job_dir, budget_seconds=budget_seconds)
-    status = str(waited.get("status") or "running")
-    if status == "completed":
-        job = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
-        final_path = expand(job["final_video"])
-        payload = completed_payload(
-            final_video=final_path,
-            job_dir=job_dir,
-            manifest_path=job_dir / "job.json",
-            validation=job.get("validation") or {},
+def run_stage_command(args: argparse.Namespace, config: dict[str, Path | str]) -> int:
+    stage = args.stage
+    script_path = Path(__file__).resolve()
+
+    if stage == "prepare":
+        payload = run_prepare_stage(
+            config,
+            source=args.source,
+            job_dir_arg=args.job_dir,
+            output_root=args.output_root,
+            max_height=args.max_height,
+            cookies_browser=args.cookies_from_browser,
+            source_language=args.source_language,
+            voice_profile=args.voice_profile,
+            force=args.force,
         )
-        emit_tick_payload(payload)
-        return 0
-    if status == "failed":
-        payload = {
-            "status": "failed",
-            "phase": waited.get("phase") or "error",
-            "job_directory": str(job_dir),
-            "message": waited.get("message") or waited.get("error") or "worker failed",
-            "next_action": "report_failure_to_user",
-            "runtime": waited,
-            "log_tail": job_runtime.tail_text(job_runtime.worker_log_path(job_dir)),
-        }
-        emit_tick_payload(payload)
-        return 2
+        if payload.get("opening_hint"):
+            print(f"[hint] {payload['opening_hint']}")
+        emit_stage_payload(payload)
+        return 0 if payload["status"] != "failed" else 2
 
-    payload = {
-        "status": "in_progress",
-        "phase": waited.get("phase") or "worker_running",
-        "job_directory": str(job_dir),
-        "worker_alive": bool(waited.get("worker_alive")),
-        "worker_pid": job_runtime.read_worker_pid(job_dir),
-        "message": waited.get("message")
-        or "tick budget exhausted; worker still running",
-        "next_action": "immediately_call_tick_again",
-        "tick_command": (
-            f'python3 "{script_path}" --tick --job-dir "{job_dir}" '
-            f"--budget-seconds {int(budget_seconds)}"
-        ),
-        "runtime": waited,
-        "log_tail": job_runtime.tail_text(job_runtime.worker_log_path(job_dir)),
-    }
-    emit_tick_payload(payload)
-    # Exit 0 so Hermes does not treat an in-progress checkpoint as a tool failure.
-    return 0
+    if not args.job_dir and stage != "prepare":
+        # Allow first stage after prepare to recover job-dir from a prior URL via prepare.
+        if args.source:
+            prep = run_prepare_stage(
+                config,
+                source=args.source,
+                job_dir_arg=None,
+                output_root=args.output_root,
+                max_height=args.max_height,
+                cookies_browser=args.cookies_from_browser,
+                source_language=args.source_language,
+                voice_profile=args.voice_profile,
+                force=False,
+            )
+            job_dir = expand(prep["job_directory"])
+            print(f"[stage] auto-prepared job_dir={job_dir}")
+        else:
+            raise WorkflowError(f"--stage {stage} 需要 --job-dir（或提供 source 以便自动 prepare）。")
+    else:
+        job_dir = expand(args.job_dir)
+
+    def completed_finalize(job: dict[str, Any], final_video: Path, validation: dict[str, Any]) -> None:
+        voice_role = str((job.get("settings") or {}).get("voice_role") or SERIOUS_VOICE_ROLE)
+        job["job_directory"] = str(job_dir)
+        finalize_completed_job(
+            job,
+            final_video,
+            validation,
+            voice_role=voice_role,
+            config=config,
+            manifest_path=job_dir / "job.json",
+        )
+
+    payload = stage_orchestrator.orchestrate_stage(
+        config=config,
+        stage=stage,
+        job_dir=job_dir,
+        force=args.force,
+        budget_seconds=args.budget_seconds,
+        script_path=script_path,
+        run_logged=run_logged,
+        translation_environment=translation_environment,
+        write_manifest=write_manifest,
+        expand=expand,
+        now_iso=now_iso,
+        validate_result=validate_result,
+        completed_job_finalize=completed_finalize,
+    )
+    emit_stage_payload(payload)
+    return 0 if payload.get("status") != "failed" else 2
 
 
 def run_full_sync(
@@ -1226,28 +1014,37 @@ def run_full_sync(
         job["force"] = True
         write_manifest(prepared["manifest_path"], job)
 
-    final_video, validation = finish_job(
+    final_video = run_translation(
         config,
-        source_video=prepared["source_video"],
-        result_dir=prepared["result_dir"],
-        log_path=prepared["log_path"],
-        manifest_path=prepared["manifest_path"],
-        job_dir=prepared["job_dir"],
-        video_id=prepared["video_id"],
-        source_request=source,
-        metadata=prepared["metadata"],
-        source_language=source_language,
+        prepared["source_video"],
+        prepared["result_dir"],
+        prepared["log_path"],
+        prepared["manifest_path"],
+        source_language,
+        prepared["voice_role"],
+        voice_profile,
+        prepared["metadata"],
+        force,
+    )
+    validation = validate_result(final_video, config)
+    job = json.loads(prepared["manifest_path"].read_text(encoding="utf-8"))
+    job["started_at"] = started_at
+    job["job_directory"] = str(prepared["job_dir"])
+    finalize_completed_job(
+        job,
+        final_video,
+        validation,
         voice_role=prepared["voice_role"],
-        voice_profile=voice_profile,
-        force=force,
-        started_at=started_at,
-    )
-    summary = completed_payload(
-        final_video=final_video,
-        job_dir=prepared["job_dir"],
+        config=config,
         manifest_path=prepared["manifest_path"],
-        validation=validation,
     )
+    summary = {
+        "status": "completed",
+        "final_video": str(final_video),
+        "job_directory": str(prepared["job_dir"]),
+        "manifest": str(prepared["manifest_path"]),
+        "validation_ok": True,
+    }
     print("[complete] 视频翻译完成。")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
@@ -1256,58 +1053,52 @@ def run_full_sync(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "下载常用语言视频，生成保留背景声、自动匹配男女音色的中文配音和硬字幕成片。"
-            " Hermes 应使用 --tick 循环；长任务在分离的 worker 中运行。"
+            "分阶段下载并生成保留背景声的中文配音硬字幕成片。"
+            " Hermes 应按 --stage 编排；长阶段会返回 in_progress 供续等。"
         )
     )
-    parser.add_argument("source", nargs="?", help="视频 URL 或本地视频文件")
+    parser.add_argument("source", nargs="?", help="视频 URL 或本地视频文件（prepare 阶段需要）")
     parser.add_argument("--output-root", default=os.getenv("PYVIDEOTRANS_OUTPUT_ROOT", str(DEFAULT_OUTPUT_ROOT)))
     parser.add_argument("--project-dir", default=os.getenv("PYVIDEOTRANS_HOME"))
     parser.add_argument(
         "--source-language",
         choices=tuple(SUPPORTED_SOURCE_LANGUAGES),
         default=os.getenv("PYVIDEOTRANS_SOURCE_LANGUAGE", "auto"),
-        help="源视频语言；默认 auto。支持：" + "、".join(
-            f"{code}={name}" for code, name in SUPPORTED_SOURCE_LANGUAGES.items()
-        ),
+        help="源视频语言；默认 auto",
     )
     parser.add_argument("--max-height", type=int, default=1080)
     parser.add_argument(
         "--voice-profile",
         choices=tuple(VOICE_PROFILES),
         default=os.getenv("PYVIDEOTRANS_VOICE_PROFILE", "auto"),
-        help="中文男声音色；默认 auto。支持：" + "、".join(
-            f"{code}={name}" for code, name in VOICE_PROFILES.items()
-        ),
+        help="中文男声音色；默认 auto",
     )
     parser.add_argument("--cookies-from-browser", help="仅在用户明确授权时使用，例如 chrome 或 firefox")
-    parser.add_argument("--force", action="store_true", help="停止旧 worker，清理项目任务缓存并重新执行翻译")
+    parser.add_argument("--force", action="store_true", help="停止旧 worker，清理并重跑当前/后续阶段")
     parser.add_argument("--preflight-only", action="store_true", help="只检查依赖、模型和本地 LLM")
     parser.add_argument("--validate-result", type=str, help="只校验一个已有成片，不运行翻译")
     parser.add_argument(
-        "--tick",
-        action="store_true",
-        help="Hermes 安全模式：启动/复用分离 worker，阻塞最多 --budget-seconds，返回可续跑 JSON",
+        "--stage",
+        choices=("preflight",) + pipeline_stages.STAGE_ORDER,
+        help="执行单个流水线阶段（Hermes 应按顺序编排）",
     )
-    parser.add_argument(
-        "--worker",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--job-dir",
-        help="已有任务目录（含 job.json）；--tick / --worker 续跑时使用",
-    )
+    parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--job-dir", help="已有任务目录（含 job.json）")
     parser.add_argument(
         "--budget-seconds",
         type=float,
         default=float(os.getenv("PYVIDEOTRANS_TICK_BUDGET", DEFAULT_TICK_BUDGET_SECONDS)),
-        help=f"单次 --tick 最多等待秒数（默认 {DEFAULT_TICK_BUDGET_SECONDS}，需低于 Hermes 前台硬顶）",
+        help=f"长阶段单次等待秒数（默认 {DEFAULT_TICK_BUDGET_SECONDS}）",
     )
     parser.add_argument(
         "--full",
         action="store_true",
-        help="在当前进程同步跑完全流程（本机调试用；Hermes 请用 --tick）",
+        help="本机调试：当前进程同步跑完全流程；Hermes 禁用",
+    )
+    parser.add_argument(
+        "--tick",
+        action="store_true",
+        help=argparse.SUPPRESS,  # old flag; ignored — use --stage loops
     )
     return parser
 
@@ -1327,14 +1118,44 @@ def main() -> int:
             )
 
         if args.worker:
-            if not args.job_dir:
-                raise WorkflowError("--worker 需要 --job-dir")
-            return run_worker(expand(args.job_dir), args.project_dir)
+            if not args.job_dir or not args.stage:
+                raise WorkflowError("--worker 需要 --job-dir 与 --stage")
+            if args.stage not in pipeline_stages.CLI_STAGE_MAP:
+                raise WorkflowError(f"--worker 不支持 stage={args.stage}")
+            return stage_orchestrator.run_worker_main(
+                job_dir=expand(args.job_dir),
+                project_dir=args.project_dir,
+                stage=args.stage,
+                preflight=preflight,
+                run_logged=run_logged,
+                translation_environment=translation_environment,
+                write_manifest=write_manifest,
+                now_iso=now_iso,
+                expand=expand,
+            )
+
+        if args.stage == "preflight" or args.preflight_only:
+            config = preflight(args.project_dir)
+            print_preflight(config)
+            if args.stage == "preflight":
+                emit_stage_payload(
+                    {
+                        "status": "completed",
+                        "stage": "preflight",
+                        "message": "preflight ok",
+                        "next_stage": "prepare",
+                        "next_action": "report_user_hint_then_run_next_stage",
+                        "user_hint": "环境已就绪，开始准备源视频。",
+                        "next_command": (
+                            f'python3 "${{HERMES_SKILL_DIR}}/scripts/translate_video.py" '
+                            f'--stage prepare "<URL-or-path>" --source-language {args.source_language}'
+                        ),
+                    }
+                )
+            return 0
 
         config = preflight(args.project_dir)
         print_preflight(config)
-        if args.preflight_only:
-            return 0
 
         if args.validate_result:
             final_video = expand(args.validate_result)
@@ -1342,9 +1163,7 @@ def main() -> int:
             print(json.dumps({"final_video": str(final_video), "validation": validation}, ensure_ascii=False, indent=2))
             return 0
 
-        # Default (and Hermes skill path): checkpointed --tick. Use --full only for
-        # local debugging that can block far beyond Hermes' ~600s hard cap.
-        if args.full and not args.tick:
+        if args.full:
             if not args.source:
                 raise WorkflowError("缺少视频 URL 或本地视频路径。")
             return run_full_sync(
@@ -1358,18 +1177,13 @@ def main() -> int:
                 force=args.force,
             )
 
-        return run_tick(
-            config,
-            source=args.source,
-            job_dir_arg=args.job_dir,
-            output_root=args.output_root,
-            max_height=args.max_height,
-            cookies_browser=args.cookies_from_browser,
-            source_language=args.source_language,
-            voice_profile=args.voice_profile,
-            force=args.force,
-            budget_seconds=args.budget_seconds,
-        )
+        if not args.stage:
+            raise WorkflowError(
+                "请使用 --stage <preflight|prepare|separate|recognize|translate|dub|validate>。"
+                " Hermes 勿使用 --full；本机调试才用 --full。"
+            )
+
+        return run_stage_command(args, config)
     except WorkflowError as exc:
         print(f"[error] {exc}", file=sys.stderr)
         return 2

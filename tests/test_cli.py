@@ -219,6 +219,15 @@ class TestBuildParser:
         ])
         assert args.clear_cache is False
 
+    def test_vtv_stage_flag(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            '--task', 'vtv', '--name', 'test.mp4',
+            '--source_language_code', 'zh-cn', '--target_language_code', 'en',
+            '--vtv-stage', 'translate', '--no-clear-cache',
+        ])
+        assert args.vtv_stage == 'translate'
+
     def test_verbose_flag(self):
         parser = build_parser()
         args = parser.parse_args(['--task', 'stt', '--name', 'test.mp4', '--verbose'])

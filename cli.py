@@ -250,26 +250,60 @@ def sts_fun(params: dict) -> None:
         raise
 
 
-def vtv_fun(params: dict) -> None:
-    """Execute full video translation task."""
+def vtv_fun(params: dict, stage: str = "all") -> None:
+    """Execute full or partial video translation task.
+
+    Stages (for Hermes skill orchestration / resume):
+      all       — full pipeline (default)
+      prepare   — demux + optional Demucs separation
+      recognize — STT + diarization
+      translate — subtitle translation
+      dub       — TTS + align + secondary STT + assemble + task_done
+    """
     from videotrans.configure.config import app_cfg
     from videotrans.task.trans_create import TransCreate
     from videotrans.task.taskcfg import TaskCfgVTT
 
+    stage = (stage or "all").strip().lower()
+    allowed = {"all", "prepare", "recognize", "translate", "dub"}
+    if stage not in allowed:
+        raise ValueError(f"Unknown --vtv-stage {stage!r}; expected one of {sorted(allowed)}")
+
+    # Never wipe caches mid-pipeline; only the full/prepare call may clear,
+    # and only when the caller passed clear_cache=True.
+    if stage not in {"all", "prepare"}:
+        params = {**params, "clear_cache": False}
+
     app_cfg.current_status = 'ing'
-    print(f"\n{tr('exec_vtv_task')}")
+    print(f"\n{tr('exec_vtv_task')} [stage={stage}]")
     print(tr('process_file', params.get('name')))
     try:
         trk = TransCreate(cfg=TaskCfgVTT(**params))
-        trk.prepare()
-        trk.recogn()
-        trk.diariz()
-        trk.trans()
-        trk.dubbing()
-        trk.align()
-        trk.recogn2pass()
-        trk.assembling()
-        trk.task_done()
+        if stage == "all":
+            trk.prepare()
+            trk.recogn()
+            trk.diariz()
+            trk.trans()
+            trk.dubbing()
+            trk.align()
+            trk.recogn2pass()
+            trk.assembling()
+            trk.task_done()
+        elif stage == "prepare":
+            trk.prepare()
+        elif stage == "recognize":
+            trk.recogn()
+            trk.diariz()
+        elif stage == "translate":
+            trk.trans()
+        elif stage == "dub":
+            # align needs queue_tts built by dubbing in the same process;
+            # assembling needs the aligned audio — keep finalize in one stage.
+            trk.dubbing()
+            trk.align()
+            trk.recogn2pass()
+            trk.assembling()
+            trk.task_done()
         print(tr('done'))
     except Exception as e:
         print(tr('failed', str(e)), file=sys.stderr)
@@ -377,6 +411,12 @@ def build_parser() -> argparse.ArgumentParser:
     vtv_group.add_argument('--subtitle_type', type=int, default=1, help=tr("help_subtitle_type"))
     vtv_group.add_argument('--clear_cache', action='store_true', default=True, help=tr("help_clear_cache"))
     vtv_group.add_argument('--no-clear-cache', dest='clear_cache', action='store_false', help=tr("help_no_clear_cache"))
+    vtv_group.add_argument(
+        '--vtv-stage',
+        choices=('all', 'prepare', 'recognize', 'translate', 'dub'),
+        default='all',
+        help='Run only one VTV stage (Hermes/skill orchestration). Default: all.',
+    )
 
     return parser
 
@@ -573,7 +613,7 @@ def main() -> int:
         'stt': lambda: stt_fun({**common_params, **build_stt_params(args)}),
         'tts': lambda: tts_fun({**common_params, **build_tts_params(args)}),
         'sts': lambda: sts_fun({**common_params, **build_sts_params(args)}),
-        'vtv': lambda: vtv_fun({**common_params, **build_vtv_params(args)}),
+        'vtv': lambda: vtv_fun({**common_params, **build_vtv_params(args)}, stage=getattr(args, 'vtv_stage', 'all')),
     }
 
     try:

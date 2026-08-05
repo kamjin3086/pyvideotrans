@@ -36,7 +36,7 @@ cd /home/kamjin/projects/pyVideoTrans
 
 当前配置已启用 Demucs 两轨分离：中文配音替换原英语人声，同时按原音量重新混入 Demucs 输出的非人声轨（音乐、环境声和音效）。混音后会限幅以防削波。Demucs 可执行文件和 `htdemucs` 模型复用本机已有安装，不会在项目环境中再次安装 PyTorch。默认 `PYVIDEOTRANS_DEMUCS_DEVICE=cuda`（ROCm 下设备名仍是 `cuda`）。
 
-Demucs 与 localhost:8101 的本地 Qwen **共用同一块 AMD GPU**。不要在分离阶段并发跑 LLM；不要靠提高 Hermes `TERMINAL_MAX_FOREGROUND_TIMEOUT` 来硬撑整条流水线。skill 使用 **分离 worker + `--tick` 短时等待**（默认预算 480 秒，低于 Hermes 前台硬顶约 600 秒）：tick 超时只结束等待进程，worker 继续跑，下一轮 `--tick --job-dir …` 续接。默认 `--no-clear-cache` 可断点续跑；仅在用户要求清权重跑时使用 `--force`。分离结束后脚本会校验 stem 能量，若出现“前几秒正常、后续静音”的塌陷会自动用 `--shifts 1` 重试一次。
+Demucs 与 localhost:8101 的本地 Qwen **共用同一块 AMD GPU**。不要在分离阶段并发跑 LLM；不要靠提高 Hermes 超时硬撑整条流水线。skill 把流程拆成 **preflight → prepare → separate → recognize → translate → dub → validate**：agent 按阶段编排，阶段边界用一行 `user_hint` 汇报；长阶段若超过约 480s 会返回 `in_progress`，agent 立刻同阶段续等且中途不聊天。默认 `--no-clear-cache` 断点续跑；仅用户要求清权重跑时用 `--force`。分离结束后会校验 stem 能量，塌陷时自动 `--shifts 1` 重试。
 
 TTS 不调用或修改共享的 18081 `tts-server`。本项目通过 `qwen-tts --stream-by-line` 批量生成整份字幕，并使用固定随机种子和采样参数。默认 `--voice-profile auto` 会通过 localhost:8101 的 Qwen 串行判断内容类型：轻松、娱乐、生活、新闻、资讯类选择带北京口音轻松感的 `dylan`；纪录片、知识、心理、历史、科学、教育、严肃叙事或无法判断时，选择 `assets/voices/serious-male-05` 中预提取的 2048 维说话人嵌入和 ICL 参考编码。
 
@@ -74,7 +74,7 @@ hermes skills install https://raw.githubusercontent.com/kamjin3086/pyvideotrans/
 帮我使用 skill 翻译这个视频：https://www.youtube.com/watch?v=FhTjL1FxRUs
 ```
 
-skill 会通过 `--tick` 循环驱动分离 worker：预检、下载、识别、串行中译、Demucs 人声替换、Qwen CLI 配音、字幕压制和成片校验。默认输出到 `~/Videos/translated-videos/<视频ID>/`，最终 MP4、源视频、`workflow.log` / `worker.log`、`runtime.json` 和 `job.json` 保存在同一任务目录。
+skill 由 agent 按 `--stage` 编排：预检、下载、Demucs 分离、识别、串行中译、配音合成、成片校验。长阶段可 `in_progress` 续等。默认输出到 `~/Videos/translated-videos/<视频ID>/`。
 
 源语言默认自动识别，也可以明确指定 `--source-language en|ja|ko|fr|de|es|it|pt|ru`。该轻量工作流只正式支持英语、日语、韩语、法语、德语、西班牙语、意大利语、葡萄牙语和俄语，不会为了冷门语言自动安装额外模型。
 

@@ -5,118 +5,97 @@ description: Download a common-language YouTube or other yt-dlp-compatible video
 
 # Translate Video to Chinese
 
-Use the repository's tested local workflow. Keep translation calls serial, use Qwen TTS through its CLI, preserve the Demucs `no_vocals` background track, replace only vocals, and hard-burn Simplified Chinese subtitles. After STT, the default video-level router makes one serial local-Qwen call over metadata and transcript samples, then keeps one coherent male/female palette for the whole video. It maps ten dominant content styles to `dylan` or `serious-male-05` plus one of ten repository female clone voices. After Demucs separation, the acoustic router reuses `qwen-codec` and two tiny speaker prototypes only to choose male versus female per subtitle cue; ambiguous cues keep the selected male default.
+Orchestrate the repository workflow as **discrete stages**. Do not wrap the whole pipeline in one opaque command. Keep translation serial, use Qwen TTS CLI, preserve Demucs `no_vocals`, replace vocals only, and hard-burn Simplified Chinese subtitles.
 
-## Run the workflow (tick loop — do not change Hermes timeouts)
+## Why stages (not one mega-script)
 
-Hermes foreground terminals are hard-capped around **600 seconds**. Long videos cannot finish inside one tool call, and raising Hermes config is the wrong fix. This skill therefore uses a **detached worker + short tick** design owned by the project:
+Hermes foreground terminals are hard-capped near **600s**. A single worker also leaves the user staring at a spinner with no idea whether download, Demucs, STT, translate, or dub is running. The agent therefore:
 
-1. Each `--tick` may start or reuse a project-owned worker that outlives the Hermes tool call.
-2. The tick process only waits up to `--budget-seconds` (default **480**), then returns a JSON checkpoint.
-3. Hermes immediately calls `--tick` again with the same `--job-dir` until `status` is `completed` or `failed`.
-4. Default resume uses `--no-clear-cache`. Never pass `--force` unless the user asked for a clean rerun.
+1. Runs **one `--stage` at a time**.
+2. On `status=completed`, briefly tells the user the `user_hint` (one short line), then starts the next stage.
+3. On `status=in_progress`, **immediately** re-runs the **same** stage (no chat, no search) — long stages tick under the 600s cap.
+4. Never raises Hermes `TERMINAL_MAX_FOREGROUND_TIMEOUT` and never uses `--full` from Hermes.
 
-### Steps
+## Stage order
 
-1. Extract exactly one video URL or local video path from the user's request.
-2. Ask for a URL or path only if none was provided.
-3. Infer an explicitly stated source language and map it to `en`, `ja`, `ko`, `fr`, `de`, `es`, `it`, `pt`, or `ru`. Otherwise use `auto`.
-4. Run the first tick through Hermes' absolute skill-directory template variable:
+| Stage | Purpose | May return `in_progress`? |
+|---|---|---|
+| `preflight` | deps / models / LLM | no |
+| `prepare` | metadata + download → `job.json` | no |
+| `separate` | Demucs + demux | **yes** (GPU quiet — no mid-stage chat) |
+| `recognize` | STT | yes |
+| `translate` | Chinese subtitles | yes |
+| `dub` | TTS + align + mux | yes |
+| `validate` | AV / background checks | no |
 
-   ```bash
-   python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --tick "<URL-or-local-video>" --source-language <code-or-auto>
-   ```
+`dub` includes assemble in one process (TTS queue state). Report it as “配音与合成”.
 
-5. Read the printed `[tick]` JSON:
-   - `status=completed` → stop; report `final_video`, `job_directory`, and `manifest`.
-   - `status=failed` → stop; report `message` / `log_tail`.
-   - `status=in_progress` → **immediately** run the `tick_command` from the JSON (or the equivalent `--tick --job-dir …`). Do not chat, search, browse, or start other tools between ticks.
-6. Repeat step 5 until completed or failed. Process one video at a time.
+## Required agent loop
 
-### Required Hermes tool shape
-
-```text
-terminal(
-  command='python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --tick "<URL>" --source-language <code-or-auto>',
-  background=false
-)
-```
-
-Later ticks:
-
-```text
-terminal(
-  command='python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --tick --job-dir "<job_directory_from_json>"',
-  background=false
-)
-```
-
-Rules:
-
-- Prefer **omitting** `timeout`, or pass a value **≤ 600** (for example `560`). Never pass `timeout=3600` / `6000` — Hermes will reject or force background mode.
-- Do **not** set `background=true`.
-- Do **not** use `process(action='poll'|'wait'|'log')` around this job.
-- Do **not** ask the user to raise `TERMINAL_MAX_FOREGROUND_TIMEOUT` or edit Hermes config for this skill.
-- Do **not** invent alternate Python one-liners or call `run_cli_local.sh` directly; always use this script's `--tick` loop.
-- Between `in_progress` ticks, re-enter the next terminal call immediately so Demucs (early phase) stays free of concurrent local-LLM chat traffic.
-
-The heavy pipeline runs in a detached worker (`worker.log`, `runtime.json`, `worker.pid` under the job directory). Killing or timing out a tick only ends the waiter; the worker keeps going and the next tick reconnects.
-
-`--force` stops any old worker and passes CLI `--clear_cache` (wipes that job's generated outputs). Use only when the user explicitly requests a clean rerun.
-
-The default output directory is `~/Videos/translated-videos/<video-id>/`. Honor a user-requested destination with `--output-root /absolute/path`.
-
-Keep `--voice-profile auto` unless the user explicitly requests a voice. Use `--voice-profile dylan` for an explicit light Beijing male voice, or `--voice-profile serious-male-05` for the extracted calm narrative male voice. Automatic style routing runs after transcription and is one short serial call to the configured local Qwen endpoint; it never runs concurrently with subtitle translation. The selected style and palette are recorded in `voice-style-plan.json`.
-
-## Respect dependency boundaries
-
-The script performs a read-only preflight before downloading or translating. It must not automatically install packages, download large models, modify another project, or restart the shared TTS service.
-
-If preflight fails:
-
-- Quote the missing dependency or model paths reported by the script.
-- Tell the user the reported approximate download size when one is available.
-- Ask permission before installing or downloading anything large.
-- Keep any Python dependencies inside the pyVideoTrans `.venv`.
-- Use the local Qwen TTS executable directly; do not use or stop the TTS server on port `18081`.
-- The serious clone and ten female clones use the already-installed Qwen Base 1.7B model plus small repository SPK/RVQ/text files. Do not download a replacement model automatically.
-- Automatic male/female voice presentation routing must not install pyannote, PyTorch, or a separate gender model. It uses the existing Qwen Base speaker encoder through `qwen-codec`, repository prototypes, and a conservative pitch fallback. Treat ambiguous, short, overlapping, or noisy cues as the default voice. This classifies acoustic presentation, not gender identity.
-
-Run preflight alone when diagnosing installation:
+1. Extract one URL or local path; ask if missing.
+2. Map an explicit language to `en|ja|ko|fr|de|es|it|pt|ru`, else `auto`.
+3. Optional opening line once: 「开始分阶段转译；人声分离和翻译/配音可能较久，阶段之间会简短汇报。」
+4. Run stages in order. Prefer `job_directory` / `next_command` from JSON.
 
 ```bash
+python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --stage preflight
+python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --stage prepare "<URL>" --source-language <code-or-auto>
+python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --stage separate --job-dir "<job_directory>"
+# … recognize → translate → dub → validate
+```
+
+5. After each terminal call, read `[stage]` JSON:
+   - `completed` → quote `user_hint` to the user (one line), then run `next_command` / `next_stage`.
+   - `in_progress` → run `tick_command` / same `--stage --job-dir` immediately; **do not** chat.
+   - `failed` → stop; report `message` / `log_tail`.
+6. On final `validate` completed, report `final_video`, `job_directory`, and manifest.
+
+### Hermes tool shape
+
+```text
+terminal(command='python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --stage <name> ...', background=false)
+```
+
+- Omit `timeout`, or pass **≤ 600** (e.g. 560). Never pass 3600/6000.
+- Do **not** use `background=true` or `process(poll|wait|log)`.
+- Do **not** call `run_cli_local.sh` directly or invent alternate scripts.
+- Do **not** pass `--force` unless the user asked for a clean rerun.
+- Between `in_progress` ticks of `separate`, stay silent so Demucs keeps the GPU.
+
+## Reporting rules (stability first)
+
+- **Do** report at stage boundaries using `user_hint`.
+- **Do not** narrate every tick or every subtitle batch.
+- **Do not** send progress chats during `separate` / other `in_progress` waits.
+- One short opening summary is enough before `prepare`.
+
+## Dependencies
+
+Preflight is read-only: no auto-install, no large downloads, no restarting the shared TTS server on `18081`.
+
+```bash
+python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --stage preflight
+# equivalent:
 python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --preflight-only
 ```
 
-## Handle common cases
+If preflight fails, quote missing paths/sizes and ask permission before installing.
 
-- Process one URL at a time. YouTube playlist URLs default to the single selected video.
-- Prefer an explicit source language when the user names one. Use automatic detection when the user does not know or mention it.
-- Support only `auto`, `en`, `ja`, `ko`, `fr`, `de`, `es`, `it`, `pt`, and `ru`. If the user requests another language, explain that the streamlined local workflow does not support it rather than installing another model or attempting an untested workaround.
-- Warn that automatic detection is intended for videos with one dominant spoken language; ask for an explicit supported language if detection produces poor transcription.
-- For a login-gated video, retry only after the user explicitly chooses a browser cookie source:
+## Common cases
 
-  ```bash
-  python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --tick "<URL>" --cookies-from-browser chrome
-  ```
+- One URL at a time; playlist URLs → that single video.
+- Supported languages only: `auto,en,ja,ko,fr,de,es,it,pt,ru`.
+- Cookies only after explicit user browser choice: `--cookies-from-browser chrome`.
+- Resume is default (`--no-clear-cache`). Existing stage artifacts are skipped.
+- Success requires `validate` JSON `status=completed` and `final_video`, not merely exit code 0.
+- Local debugging may use `--full`. Hermes must not.
 
-- Reuse an already completed and valid result. Pass `--force` only when the user explicitly requests a clean rerun.
-- Preserve the original downloaded source under the job directory so a failed or timed-out tick can resume via `--tick --job-dir …` without wiping progress.
-- Do not claim success merely because a tick exited with code zero. Success requires `[tick]` JSON `status=completed` plus a validated `final_video`.
-- Local debugging outside Hermes may use `--full` for a single long blocking run. Hermes must not use `--full`.
+## Deliverables
 
-## Expected deliverables
+Job dir `~/Videos/translated-videos/<video-id>/` (override with `--output-root`):
 
-Each job directory contains:
+- `source/`, `result/` (`vocal.wav`, `instrument.wav`, `zh-cn.srt`, final MP4, voice plans)
+- `job.json` (includes `pipeline.stages` checkpoints)
+- `workflow.log`, `worker.log`, `runtime.json`, `worker.pid`
 
-- `source/`: downloaded or referenced source video
-- `result/`: final MP4 plus workflow artifacts such as `instrument.wav`, `vocal.wav`, and `zh-cn.srt`
-- `workflow.log`: download and translation logs from the waiter / prep phase
-- `worker.log`: detached worker stdout/stderr
-- `runtime.json`: worker checkpoint (`running` / `completed` / `failed`)
-- `worker.pid`: detached worker pid while alive
-- `job.json`: source, settings, output paths, timestamps, and validation results
-- `result/voice-style-plan.json`: video-wide style, confidence, reason, and selected male/female palette
-- `result/voice-routing.json`: per-subtitle acoustic label, confidence margin, selected voice, and routing summary
-
-Treat the `final_video` value in a `status=completed` tick JSON as authoritative.
+Treat `final_video` from a completed `validate` stage as authoritative.
