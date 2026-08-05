@@ -460,6 +460,19 @@ def orchestrate_stage(
             job["completed_at"] = now_iso()
             stages.mark_stage(job, "validate", status="completed", artifacts={"final_video": str(expected)})
             write_manifest(manifest_path, job)
+        style = validation.get("voice_style_plan") or {}
+        routing_counts = validation.get("voice_routing_counts") or {}
+        dominant = None
+        if routing_counts:
+            dominant = max(routing_counts.items(), key=lambda kv: int(kv[1] or 0))[0]
+        male_voice = style.get("male_voice") or validation.get("voice") or "serious-male-05"
+        female_palette = style.get("female_voice") or validation.get("female_voice")
+        # Actual cue voices: male cues → male_voice; female cues → female_palette.
+        used_voice = male_voice if dominant in (None, "male", "uncertain") else female_palette
+        if routing_counts and int(routing_counts.get("female") or 0) == 0:
+            used_voice = male_voice
+        elif routing_counts and int(routing_counts.get("male") or 0) == 0 and int(routing_counts.get("female") or 0) > 0:
+            used_voice = female_palette
         return stages.stage_payload(
             status="completed",
             stage="validate",
@@ -470,8 +483,23 @@ def orchestrate_stage(
                 "final_video": str(expected),
                 "manifest": str(manifest_path),
                 "validation_ok": True,
-                "voice_style": validation.get("voice_style_plan", {}).get("style"),
-                "female_voice": validation.get("voice_style_plan", {}).get("female_voice"),
+                "dubbing": {
+                    "style": style.get("style"),
+                    "style_label": style.get("style_label"),
+                    "male_voice": male_voice,
+                    "female_voice_for_female_cues": female_palette,
+                    "routing_counts": routing_counts,
+                    "dominant_presentation": dominant,
+                    "primary_dub_voice": used_voice,
+                    "note": (
+                        "female_voice_for_female_cues is only the palette for cues "
+                        "classified female; it does NOT mean the whole video is female-dubbed."
+                    ),
+                },
+                # Keep short top-level fields for agents; prefer dubbing.* when reporting.
+                "voice_style": style.get("style"),
+                "primary_dub_voice": used_voice,
+                "voice_routing_counts": routing_counts,
             },
         )
 
