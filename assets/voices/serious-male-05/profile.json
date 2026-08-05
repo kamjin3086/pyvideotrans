@@ -1,0 +1,41 @@
+{
+  "id": "serious-male-05",
+  "display_name": "沉稳叙事男声 05",
+  "gender": "male",
+  "usage": [
+    "documentary",
+    "knowledge",
+    "psychology",
+    "history",
+    "science",
+    "serious_narration"
+  ],
+  "engine": "qwentts.cpp",
+  "model_variant": "Qwen3-TTS-12Hz-1.7B-Base",
+  "clone_mode": "icl",
+  "sample_rate": 24000,
+  "reference_duration_seconds": 13.5,
+  "speaker_embedding_dimensions": 2048,
+  "rvq_codebooks": 16,
+  "rvq_frames": 168,
+  "reference_mean_volume_db": -17.1,
+  "reference_peak_volume_db": -1.8,
+  "assets": {
+    "speaker_embedding": "reference.spk",
+    "reference_codes": "reference.rvq",
+    "reference_transcript": "reference.txt"
+  },
+  "sha256": {
+    "reference.spk": "96c53726cdb1f738d0cd7284f3328262fa2549bddb816fad460449f99ec8a124",
+    "reference.rvq": "b218cd43212b7fdf68db8d07b0fe46b8695d8c020ae1fe8c5548b34dc7644145",
+    "reference.txt": "0f8e8b2c982f5735ce3a431b1ebbf3b8ed447dbefd18d8deaf5365436ead8be2"
+  },
+  "verification": {
+    "status": "passed",
+    "qwentts_cpp_revision": "82cd05b",
+    "generated_duration_seconds": 9.68,
+    "seed": 42,
+    "temperature": 0.62,
+    "top_p": 0.9
+  }
+}

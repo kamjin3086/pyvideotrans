@@ -1,4 +1,6 @@
 import copy
+import json
+import os
 import re
 import shutil
 import time
@@ -53,6 +55,61 @@ class DubbingMixin:
 
         line_roles = app_cfg.line_roles
         voice_role = self.cfg.voice_role
+        female_voice = os.environ.get('PYVIDEOTRANS_QWENTTS_FEMALE_VOICE', 'female-01')
+        if os.environ.get('PYVIDEOTRANS_AUTO_VOICE_STYLE', '0') == '1':
+            try:
+                from videotrans.process.voice_style import choose_video_voice_plan
+                voice_plan = choose_video_voice_plan(
+                    source_subs,
+                    subs,
+                    default_male=voice_role,
+                    male_requested=os.environ.get('PYVIDEOTRANS_VOICE_PROFILE_REQUESTED', 'auto'),
+                    female_requested=os.environ.get('PYVIDEOTRANS_FEMALE_VOICE_PROFILE', 'auto'),
+                    api_base=os.environ.get('PYVIDEOTRANS_LLM_API', 'http://127.0.0.1:8101/v1'),
+                    model=os.environ.get('PYVIDEOTRANS_LLM_MODEL', 'Qwen3.6-35B-A3B-instruct'),
+                    profile_path=os.environ.get('PYVIDEOTRANS_VOICE_STYLE_PROFILE'),
+                    metadata_context=os.environ.get('PYVIDEOTRANS_VIDEO_STYLE_CONTEXT', ''),
+                )
+                voice_role = voice_plan['male_voice']
+                female_voice = voice_plan['female_voice']
+                Path(self.cfg.target_dir, 'voice-style-plan.json').write_text(
+                    json.dumps(voice_plan, ensure_ascii=False, indent=2) + '\n',
+                    encoding='utf-8',
+                )
+                logger.debug(
+                    f'视频配音风格完成: style={voice_plan["style"]}, '
+                    f'male={voice_role}, female={female_voice}'
+                )
+            except Exception as exc:
+                logger.exception(f'视频配音风格分类失败，继续使用默认音色: {exc}', exc_info=True)
+        if (
+            os.environ.get('PYVIDEOTRANS_AUTO_VOICE_GENDER', '0') == '1'
+            and source_subs
+            and self.cfg.vocal
+            and Path(self.cfg.vocal).is_file()
+        ):
+            try:
+                from videotrans.process.voice_pitch import route_subtitle_voices
+                inferred_roles, report = route_subtitle_voices(
+                    self.cfg.vocal,
+                    source_subs,
+                    default_voice=voice_role,
+                    female_voice=female_voice,
+                    qwen_codec_bin=os.environ.get('PYVIDEOTRANS_QWEN_CODEC_BIN'),
+                    codec_model=os.environ.get('PYVIDEOTRANS_QWENTTS_CODEC'),
+                    base_model=os.environ.get('PYVIDEOTRANS_QWENTTS_BASE_MODEL'),
+                    male_prototype_path=os.environ.get('PYVIDEOTRANS_VOICE_MALE_PROTOTYPE'),
+                    female_prototype_path=os.environ.get('PYVIDEOTRANS_VOICE_FEMALE_PROTOTYPE'),
+                )
+                # Explicit per-line assignments remain authoritative.
+                line_roles = inferred_roles | (line_roles or {})
+                Path(self.cfg.target_dir, 'voice-routing.json').write_text(
+                    json.dumps(report, ensure_ascii=False, indent=2) + '\n',
+                    encoding='utf-8',
+                )
+                logger.debug(f'自动声线路由完成: {report["counts"]}')
+            except Exception as exc:
+                logger.exception(f'自动声线路由失败，继续使用默认音色: {exc}', exc_info=True)
         logger.debug(f'{line_roles=}')
         for i, it in enumerate(subs):
             if it['end_time'] < it['start_time'] or not it['text'].strip():

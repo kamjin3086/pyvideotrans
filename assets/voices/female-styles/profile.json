@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "fallback_style": "general",
+  "minimum_confidence": 0.55,
+  "styles": {
+    "general": {
+      "label": "通用、日常、综合内容",
+      "female_voice": "female-01",
+      "male_voice": "dylan",
+      "description": "温暖自然、平和友好"
+    },
+    "documentary": {
+      "label": "历史、纪录片、自然与严肃纪实",
+      "female_voice": "female-02",
+      "male_voice": "serious-male-05",
+      "description": "成熟沉稳、可信克制"
+    },
+    "news": {
+      "label": "新闻、时事、快讯与公共资讯",
+      "female_voice": "female-03",
+      "male_voice": "dylan",
+      "description": "明亮自信、咬字利落"
+    },
+    "knowledge": {
+      "label": "教育、科学、课程与知识讲解",
+      "female_voice": "female-04",
+      "male_voice": "serious-male-05",
+      "description": "温柔知性、清晰耐听"
+    },
+    "lifestyle": {
+      "label": "生活、旅行、美食、娱乐与轻松内容",
+      "female_voice": "female-05",
+      "male_voice": "dylan",
+      "description": "年轻活泼、轻松明亮"
+    },
+    "professional": {
+      "label": "商业、财经、职场、教程与专业解说",
+      "female_voice": "female-06",
+      "male_voice": "serious-male-05",
+      "description": "专业中性、精确克制"
+    },
+    "human_story": {
+      "label": "心理、人物、情感与社会故事",
+      "female_voice": "female-07",
+      "male_voice": "serious-male-05",
+      "description": "温暖共情、真诚安定"
+    },
+    "culture": {
+      "label": "艺术、文化、文学与人物传记",
+      "female_voice": "female-08",
+      "male_voice": "serious-male-05",
+      "description": "优雅成熟、醇厚叙事"
+    },
+    "technology": {
+      "label": "科技、数码、汽车、游戏与产品资讯",
+      "female_voice": "female-09",
+      "male_voice": "dylan",
+      "description": "年轻有活力、节奏明快"
+    },
+    "cinematic": {
+      "label": "剧情、悬疑、影视解说与电影化叙事",
+      "female_voice": "female-10",
+      "male_voice": "serious-male-05",
+      "description": "温暖克制、沉浸讲述"
+    }
+  }
+}

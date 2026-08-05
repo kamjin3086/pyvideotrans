@@ -6,7 +6,7 @@
 | --- | --- |
 | 常用语言 STT | Faster‑Whisper `small` 多语模型，CPU `int8`，项目通过符号链接复用已有的 464MB 缓存 |
 | 常用语言→中文翻译 | `http://127.0.0.1:8101/v1`，`Qwen3.6-35B-A3B-instruct`，串行调用 |
-| 中文 TTS | Hermes `qwen-tts` CLI，CustomVoice Q8 模型，男声 `dylan`，单进程批量逐行生成 |
+| 中文 TTS | Hermes `qwen-tts` CLI；轻松/新闻类用 CustomVoice `dylan`，其他内容用项目内 `serious-male-05` ICL 克隆音色；单进程批量逐行生成 |
 | 人声/背景分离 | 本机 Demucs 4.1.0，`htdemucs`，通过已有 ROCm GPU 环境运行 |
 
 启动桌面界面：
@@ -34,9 +34,15 @@ cd /home/kamjin/projects/pyVideoTrans
   --subtitle_type 1 --voice_autorate --align_sub_audio --is_separate
 ```
 
-当前配置已启用 Demucs 两轨分离：中文配音替换原英语人声，同时按原音量重新混入 Demucs 输出的非人声轨（音乐、环境声和音效）。混音后会限幅以防削波。Demucs 可执行文件和 `htdemucs` 模型复用本机已有安装，不会在项目环境中再次安装 PyTorch。
+当前配置已启用 Demucs 两轨分离：中文配音替换原英语人声，同时按原音量重新混入 Demucs 输出的非人声轨（音乐、环境声和音效）。混音后会限幅以防削波。Demucs 可执行文件和 `htdemucs` 模型复用本机已有安装，不会在项目环境中再次安装 PyTorch。默认 `PYVIDEOTRANS_DEMUCS_DEVICE=cuda`（ROCm 下设备名仍是 `cuda`）。
 
-TTS 不调用或修改共享的 18081 `tts-server`。本项目通过 `qwen-tts --stream-by-line` 加载一次现有 CustomVoice Q8 模型，使用 `dylan` 男声批量生成整份字幕，并传入教程旁白风格、固定随机种子和采样参数；不会新增模型下载。
+Demucs 与 localhost:8101 的本地 Qwen **共用同一块 AMD GPU**。不要在分离阶段并发跑 LLM；正确做法是让 `translate_video.py` / CLI **前台阻塞跑完**，而不是卸载模型。分离结束后脚本会校验 stem 能量，若出现“前几秒正常、后续静音”的塌陷会自动用 `--shifts 1` 重试一次。Hermes skill 同样要求单次阻塞工具调用、高超时，禁止把转译丢到后台后再轮询聊天。
+
+TTS 不调用或修改共享的 18081 `tts-server`。本项目通过 `qwen-tts --stream-by-line` 批量生成整份字幕，并使用固定随机种子和采样参数。默认 `--voice-profile auto` 会通过 localhost:8101 的 Qwen 串行判断内容类型：轻松、娱乐、生活、新闻、资讯类选择带北京口音轻松感的 `dylan`；纪录片、知识、心理、历史、科学、教育、严肃叙事或无法判断时，选择 `assets/voices/serious-male-05` 中预提取的 2048 维说话人嵌入和 ICL 参考编码。
+
+可用 `--voice-profile dylan` 或 `--voice-profile serious-male-05` 强制指定。后者使用本机已经存在的 `qwen-talker-1.7b-base-Q8_0.gguf`（约 2 GB）和 Q8 codec；本次没有下载新模型。音色包运行时只需要仓库中的 `.spk`、`.rvq` 和参考文本，不依赖原始试听 MP3，也不会修改 `hermes-tts-lab`。
+
+自动配音采用两级路由，不安装 pyannote、PyTorch 或额外性别模型。STT 完成后，本地 Qwen 根据视频元数据和全片转录抽样串行分类一次，从 10 种内容风格中选择一套固定男女音色；结果写入 `voice-style-plan.json`。随后 Demucs 得到原始人声轨，项目按字幕时间段调用同一套 `qwen-codec` speaker encoder，并与仓库中两个 8 KB 的男女声线原型比较；明确女性声线使用该视频选定的 `female-01` 至 `female-10` 固定克隆音色，明确男性声线使用 Dylan 或 `serious-male-05`，短片段、重叠人声、噪声或低置信度片段保持默认。逐句结果写入 `voice-routing.json`。这里判断的是声学呈现，不是说话人的性别身份。设置 `PYVIDEOTRANS_AUTO_VOICE_STYLE=0` 可关闭视频风格选择，设置 `PYVIDEOTRANS_AUTO_VOICE_GENDER=0` 可关闭逐句男女声路由。
 
 ## 项目内性能配置
 

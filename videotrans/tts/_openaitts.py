@@ -45,27 +45,65 @@ class OPENAITTS(BaseTTS):
 
     def _run_cli_batch(self, role: str, items: List[Dict]) -> None:
         binary = os.environ['PYVIDEOTRANS_QWENTTS_BIN']
-        model = os.environ['PYVIDEOTRANS_QWENTTS_MODEL']
         codec = os.environ['PYVIDEOTRANS_QWENTTS_CODEC']
+        clone_role = os.environ.get('PYVIDEOTRANS_QWENTTS_CLONE_ROLE', '').strip()
+        clone_files = []
+        if clone_role and role == clone_role:
+            clone_files = [
+                os.environ['PYVIDEOTRANS_QWENTTS_CLONE_SPK'],
+                os.environ['PYVIDEOTRANS_QWENTTS_CLONE_RVQ'],
+                os.environ['PYVIDEOTRANS_QWENTTS_CLONE_TEXT'],
+            ]
+        clone_root = os.environ.get('PYVIDEOTRANS_QWENTTS_CLONE_ROOT', '').strip()
+        if not clone_files and clone_root and re.fullmatch(r'[A-Za-z0-9_-]+', role):
+            role_dir = Path(clone_root) / role
+            candidates = [
+                role_dir / 'reference.spk',
+                role_dir / 'reference.rvq',
+                role_dir / 'reference.txt',
+            ]
+            if not candidates[2].is_file():
+                candidates[2] = Path(clone_root) / 'reference.txt'
+            if all(path.is_file() for path in candidates):
+                clone_files = [str(path) for path in candidates]
+        is_clone = bool(clone_files)
+        if is_clone:
+            model = os.environ['PYVIDEOTRANS_QWENTTS_BASE_MODEL']
+        else:
+            model = os.environ['PYVIDEOTRANS_QWENTTS_MODEL']
         for required in (binary, model, codec):
             if not Path(required).is_file():
                 raise StopTask(f'Qwen TTS CLI file does not exist: {required}')
+        for required in clone_files:
+            if not Path(required).is_file():
+                raise StopTask(f'Qwen TTS clone asset does not exist: {required}')
 
         command = [
             binary, '--model', model, '--codec', codec,
-            '--speaker', role, '--lang', 'Chinese',
+            '--lang', 'Chinese',
             '--seed', os.environ.get('PYVIDEOTRANS_QWENTTS_SEED', '42'),
             '--temp', os.environ.get('PYVIDEOTRANS_QWENTTS_TEMP', '0.62'),
             '--top-p', os.environ.get('PYVIDEOTRANS_QWENTTS_TOP_P', '0.9'),
         ]
-        instruction = os.environ.get('PYVIDEOTRANS_QWENTTS_INSTRUCT', '').strip()
-        if instruction:
-            command.extend(['--instruct', instruction])
+        if is_clone:
+            command.extend([
+                '--ref-spk', clone_files[0],
+                '--ref-rvq', clone_files[1],
+                '--ref-text', clone_files[2],
+            ])
+        else:
+            command.extend(['--speaker', role])
+            instruction = os.environ.get('PYVIDEOTRANS_QWENTTS_INSTRUCT', '').strip()
+            if instruction:
+                command.extend(['--instruct', instruction])
         command.extend(['--stream-by-line', '-o', '-'])
 
         input_text = '\n'.join(re.sub(r'[\r\n]+', ' ', item['text']).strip()
                                for item in items) + '\n'
-        logger.debug(f'Qwen TTS CLI batch: role={role}, lines={len(items)}')
+        logger.debug(
+            f'Qwen TTS CLI batch: role={role}, mode={"clone" if is_clone else "custom"}, '
+            f'lines={len(items)}'
+        )
         result = subprocess.run(
             command,
             input=input_text.encode('utf-8'),

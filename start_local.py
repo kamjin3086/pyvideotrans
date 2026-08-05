@@ -3,7 +3,8 @@
 This profile intentionally avoids Ollama and all CUDA/PyTorch model stacks:
 * STT: the cached Systran/faster-whisper-small model (CPU/CTranslate2 int8)
 * translation: the OpenAI-compatible Qwen3.6 35B-A3B endpoint on port 8101
-* TTS: Hermes qwen-tts CLI with the CustomVoice dylan male speaker
+* TTS: Hermes qwen-tts CLI with a video-wide style router, two male choices,
+  and ten repository-owned female clone choices
 
 Run ``./run_local.sh`` for the desktop GUI.  ``--print-config`` is useful for
 checking the effective profile without starting Qt.
@@ -77,7 +78,25 @@ def configure() -> None:
     os.environ.setdefault("PYVIDEOTRANS_QWENTTS_CLI", "1")
     os.environ.setdefault("PYVIDEOTRANS_QWENTTS_BIN", "/home/kamjin/projects/hermes-tts-lab/src/qwentts.cpp/build/qwen-tts")
     os.environ.setdefault("PYVIDEOTRANS_QWENTTS_MODEL", "/home/kamjin/projects/hermes-tts-lab/models/qwen-talker-1.7b-customvoice-Q8_0.gguf")
+    os.environ.setdefault("PYVIDEOTRANS_QWENTTS_BASE_MODEL", "/home/kamjin/projects/hermes-tts-lab/models/qwen-talker-1.7b-base-Q8_0.gguf")
     os.environ.setdefault("PYVIDEOTRANS_QWENTTS_CODEC", "/home/kamjin/projects/hermes-tts-lab/models/qwen-tokenizer-12hz-Q8_0.gguf")
+    os.environ.setdefault("PYVIDEOTRANS_QWENTTS_CLONE_ROLE", "serious-male-05")
+    voice_dir = Path(__file__).resolve().parent / "assets" / "voices" / "serious-male-05"
+    os.environ.setdefault("PYVIDEOTRANS_QWENTTS_CLONE_SPK", str(voice_dir / "reference.spk"))
+    os.environ.setdefault("PYVIDEOTRANS_QWENTTS_CLONE_RVQ", str(voice_dir / "reference.rvq"))
+    os.environ.setdefault("PYVIDEOTRANS_QWENTTS_CLONE_TEXT", str(voice_dir / "reference.txt"))
+    female_styles_dir = ROOT / "assets" / "voices" / "female-styles"
+    os.environ.setdefault("PYVIDEOTRANS_QWENTTS_CLONE_ROOT", str(female_styles_dir))
+    os.environ.setdefault("PYVIDEOTRANS_AUTO_VOICE_STYLE", "1")
+    os.environ.setdefault("PYVIDEOTRANS_VOICE_STYLE_PROFILE", str(female_styles_dir / "profile.json"))
+    os.environ.setdefault("PYVIDEOTRANS_VOICE_PROFILE_REQUESTED", "auto")
+    os.environ.setdefault("PYVIDEOTRANS_FEMALE_VOICE_PROFILE", "auto")
+    os.environ.setdefault("PYVIDEOTRANS_AUTO_VOICE_GENDER", "1")
+    os.environ.setdefault("PYVIDEOTRANS_QWENTTS_FEMALE_VOICE", "female-01")
+    os.environ.setdefault("PYVIDEOTRANS_QWEN_CODEC_BIN", "/home/kamjin/projects/hermes-tts-lab/src/qwentts.cpp/build/qwen-codec")
+    router_dir = ROOT / "assets" / "voices" / "gender-router"
+    os.environ.setdefault("PYVIDEOTRANS_VOICE_MALE_PROTOTYPE", str(router_dir / "male.spk"))
+    os.environ.setdefault("PYVIDEOTRANS_VOICE_FEMALE_PROTOTYPE", str(router_dir / "female.spk"))
     os.environ.setdefault("PYVIDEOTRANS_QWENTTS_INSTRUCT", "自然、沉稳的普通话男性教程旁白，语速适中，避免夸张表演")
     os.environ.setdefault("PYVIDEOTRANS_QWENTTS_SEED", "42")
     os.environ.setdefault("PYVIDEOTRANS_QWENTTS_TEMP", "0.62")

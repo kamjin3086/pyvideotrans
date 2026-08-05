@@ -1,0 +1,26 @@
+{
+  "id": "qwen-voice-presentation-router-v1",
+  "purpose": "Conservative acoustic male/female voice presentation routing; not gender identity inference",
+  "embedding_model": "Qwen3-TTS-12Hz-1.7B-Base speaker encoder",
+  "embedding_dimensions": 2048,
+  "classification": "cosine distance to normalized prototype centroids",
+  "minimum_margin": 0.006,
+  "male_prototypes": [
+    "dylan",
+    "eric",
+    "uncle_fu",
+    "ryan",
+    "aiden"
+  ],
+  "female_prototypes": [
+    "serena",
+    "vivian",
+    "ono_anna",
+    "sohee"
+  ],
+  "fallback": "Low-pitch male only; ambiguous and short clips retain the job default voice",
+  "sha256": {
+    "male.spk": "3ba6eea3b13547a7813759a868dc4c99b27300068310d02b49752e41e5538e83",
+    "female.spk": "fdd126bc2b4fc0b1490036e452324134e6aaffe52f0fd94133e5e299e9d8b5f3"
+  }
+}
