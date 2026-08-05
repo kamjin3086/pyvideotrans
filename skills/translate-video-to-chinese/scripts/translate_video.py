@@ -17,8 +17,16 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Iterable
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+import job_runtime  # noqa: E402
+
 
 DEFAULT_OUTPUT_ROOT = Path.home() / "Videos" / "translated-videos"
+# Stay under Hermes TERMINAL_MAX_FOREGROUND_TIMEOUT (default 600s) with headroom
+# for process startup and JSON printing.
+DEFAULT_TICK_BUDGET_SECONDS = 480
 DEFAULT_LLM_API = "http://127.0.0.1:8101/v1"
 MEDIA_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi"}
 SUPPORTED_SOURCE_LANGUAGES = {
@@ -688,8 +696,10 @@ def run_translation(
         "--voice_autorate",
         "--align_sub_audio",
         "--is_separate",
-        "--clear_cache",
     ]
+    # CLI defaults clear_cache=True (wipes target+cache at start). Resume needs
+    # the opposite; only --force may wipe.
+    command.append("--clear_cache" if force else "--no-clear-cache")
     run_logged(
         command,
         log_path,
@@ -708,9 +718,547 @@ def write_manifest(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def emit_tick_payload(payload: dict[str, Any]) -> None:
+    """Print one machine-readable checkpoint for Hermes to loop on."""
+    print("[tick]")
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def resolve_voice_role(voice_profile: str) -> str:
+    if voice_profile == "auto":
+        print("[voice] 男女音色将在转录后按全片风格自动选择。")
+        return SERIOUS_VOICE_ROLE
+    return voice_profile
+
+
+def prepare_job_paths(
+    config: dict[str, Path | str],
+    source: str,
+    output_root: str,
+    max_height: int,
+    cookies_browser: str | None,
+    source_language: str,
+    voice_profile: str,
+) -> dict[str, Any]:
+    local_source = expand(source) if not re.match(r"^https?://", source, flags=re.I) else None
+    if local_source:
+        if not local_source.is_file():
+            raise WorkflowError(f"本地视频不存在：{local_source}")
+        metadata: dict[str, Any] = {
+            "id": local_identifier(local_source),
+            "title": local_source.stem,
+            "webpage_url": None,
+        }
+    else:
+        print("[metadata] 正在读取远程视频信息……")
+        metadata = load_remote_metadata(Path(config["yt_dlp"]), source, cookies_browser)
+
+    voice_role = resolve_voice_role(voice_profile)
+    video_id = safe_identifier(str(metadata.get("id") or hashlib.sha256(source.encode()).hexdigest()[:12]))
+    job_dir = expand(output_root) / video_id
+    source_dir = job_dir / "source"
+    result_dir = job_dir / "result"
+    log_path = job_dir / "workflow.log"
+    manifest_path = job_dir / "job.json"
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    if local_source:
+        source_video = local_source
+        print(f"[source] 使用本地视频：{source_video}")
+    else:
+        source_video = download_video(
+            config,
+            source,
+            source_dir,
+            log_path,
+            max_height,
+            cookies_browser,
+        )
+
+    settings = {
+        "source_language": source_language,
+        "target_language": "zh-cn",
+        "voice_profile_requested": voice_profile,
+        "voice_role": voice_role,
+        "automatic_video_style_routing": os.getenv("PYVIDEOTRANS_AUTO_VOICE_STYLE", "1") == "1",
+        "automatic_acoustic_voice_routing": os.getenv("PYVIDEOTRANS_AUTO_VOICE_GENDER", "1") == "1",
+        "llm_api": str(config["llm_api"]),
+        "separation": "demucs two-stems vocals",
+        "subtitles": "hard-burned",
+        "max_download_height": max_height,
+        "cookies_from_browser": cookies_browser,
+    }
+    seed_manifest = {
+        "status": "prepared",
+        "source_request": source,
+        "source_video": str(source_video),
+        "video_id": video_id,
+        "title": metadata.get("title"),
+        "metadata": {
+            "title": metadata.get("title"),
+            "uploader": metadata.get("uploader") or metadata.get("channel"),
+            "categories": metadata.get("categories"),
+            "tags": (metadata.get("tags") or [])[:30],
+            "description": str(metadata.get("description") or "")[:3000],
+        },
+        "job_directory": str(job_dir),
+        "settings": settings,
+        "started_at": now_iso(),
+        "log": str(log_path),
+    }
+    write_manifest(manifest_path, seed_manifest)
+    return {
+        "job_dir": job_dir,
+        "result_dir": result_dir,
+        "log_path": log_path,
+        "manifest_path": manifest_path,
+        "source_video": source_video,
+        "video_id": video_id,
+        "metadata": metadata,
+        "voice_role": voice_role,
+        "settings": settings,
+        "seed_manifest": seed_manifest,
+    }
+
+
+def completed_payload(
+    *,
+    final_video: Path,
+    job_dir: Path,
+    manifest_path: Path,
+    validation: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "status": "completed",
+        "phase": "done",
+        "final_video": str(final_video),
+        "job_directory": str(job_dir),
+        "manifest": str(manifest_path),
+        "validation_ok": True,
+        "next_action": "report_success_to_user",
+        "message": "video translation completed",
+        "voice_style": validation.get("voice_style_plan", {}).get("style"),
+        "female_voice": validation.get("voice_style_plan", {}).get("female_voice"),
+    }
+
+
+def finish_job(
+    config: dict[str, Path | str],
+    *,
+    source_video: Path,
+    result_dir: Path,
+    log_path: Path,
+    manifest_path: Path,
+    job_dir: Path,
+    video_id: str,
+    source_request: str,
+    metadata: dict[str, Any],
+    source_language: str,
+    voice_role: str,
+    voice_profile: str,
+    force: bool,
+    started_at: str,
+) -> tuple[Path, dict[str, Any]]:
+    print(
+        "[translate] 开始转译。Demucs 会使用本机 GPU；worker 期间请避免并发占用同一 GPU 的本地 LLM 长请求。"
+    )
+    job_runtime.write_runtime(
+        job_dir,
+        {
+            "status": "running",
+            "phase": "translate",
+            "worker_pid": os.getpid(),
+            "message": "running pyVideoTrans CLI",
+            "heartbeat_at": now_iso(),
+        },
+    )
+    final_video = run_translation(
+        config,
+        source_video,
+        result_dir,
+        log_path,
+        manifest_path,
+        source_language,
+        voice_role,
+        voice_profile,
+        metadata,
+        force,
+    )
+    job_runtime.write_runtime(
+        job_dir,
+        {
+            "status": "running",
+            "phase": "validate",
+            "worker_pid": os.getpid(),
+            "message": f"validating {final_video}",
+            "heartbeat_at": now_iso(),
+        },
+    )
+    print(f"[validate] 正在校验成片和背景声：{final_video}")
+    validation = validate_result(final_video, config)
+    manifest: dict[str, Any] = {
+        "status": "completed",
+        "source_request": source_request,
+        "source_video": str(source_video),
+        "video_id": video_id,
+        "title": metadata.get("title"),
+        "final_video": str(final_video),
+        "job_directory": str(job_dir),
+        "settings": {
+            "source_language": source_language,
+            "target_language": "zh-cn",
+            "voice_profile_requested": voice_profile,
+            "voice": validation.get("voice_style_plan", {}).get("male_voice", voice_role),
+            "automatic_video_style_routing": os.getenv("PYVIDEOTRANS_AUTO_VOICE_STYLE", "1") == "1",
+            "video_style": validation.get("voice_style_plan", {}).get("style"),
+            "automatic_acoustic_voice_routing": os.getenv("PYVIDEOTRANS_AUTO_VOICE_GENDER", "1") == "1",
+            "female_voice": validation.get("voice_style_plan", {}).get(
+                "female_voice",
+                os.getenv("PYVIDEOTRANS_QWENTTS_FEMALE_VOICE", "female-01"),
+            ),
+            "llm_api": config["llm_api"],
+            "separation": "demucs two-stems vocals",
+            "subtitles": "hard-burned",
+        },
+        "validation": validation,
+        "started_at": started_at,
+        "completed_at": now_iso(),
+        "log": str(log_path),
+    }
+    write_manifest(manifest_path, manifest)
+    return final_video, validation
+
+
+def run_worker(job_dir: Path, project_dir: str | None) -> int:
+    job_dir = expand(str(job_dir))
+    manifest_path = job_dir / "job.json"
+    if not manifest_path.is_file():
+        raise WorkflowError(f"worker 缺少 job.json：{manifest_path}")
+    try:
+        job = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise WorkflowError(f"无法读取 job.json：{exc}") from exc
+
+    config = preflight(project_dir)
+    settings = job.get("settings") or {}
+    source_video = expand(job["source_video"])
+    result_dir = job_dir / "result"
+    log_path = expand(job.get("log") or str(job_dir / "workflow.log"))
+    metadata = dict(job.get("metadata") or {})
+    if not metadata.get("title"):
+        metadata["title"] = job.get("title")
+    source_language = str(settings.get("source_language") or "auto")
+    voice_profile = str(settings.get("voice_profile_requested") or "auto")
+    voice_role = str(settings.get("voice_role") or resolve_voice_role(voice_profile))
+    force = bool(job.get("force"))
+    started_at = str(job.get("started_at") or now_iso())
+    if force:
+        # Consume one-shot wipe flag so a later reconnect cannot wipe again.
+        job["force"] = False
+        write_manifest(manifest_path, job)
+
+    try:
+        job_runtime.write_runtime(
+            job_dir,
+            {
+                "status": "running",
+                "phase": "worker_running",
+                "worker_pid": os.getpid(),
+                "started_at": started_at,
+                "heartbeat_at": now_iso(),
+                "message": "worker process active",
+            },
+        )
+        final_video, validation = finish_job(
+            config,
+            source_video=source_video,
+            result_dir=result_dir,
+            log_path=log_path,
+            manifest_path=manifest_path,
+            job_dir=job_dir,
+            video_id=str(job.get("video_id") or job_dir.name),
+            source_request=str(job.get("source_request") or source_video),
+            metadata=metadata,
+            source_language=source_language,
+            voice_role=voice_role,
+            voice_profile=voice_profile,
+            force=force,
+            started_at=started_at,
+        )
+        payload = completed_payload(
+            final_video=final_video,
+            job_dir=job_dir,
+            manifest_path=manifest_path,
+            validation=validation,
+        )
+        job_runtime.write_runtime(
+            job_dir,
+            {
+                "status": "completed",
+                "phase": "done",
+                "worker_pid": os.getpid(),
+                "final_video": str(final_video),
+                "message": "completed",
+                "heartbeat_at": now_iso(),
+            },
+        )
+        print("[complete] 视频翻译完成。")
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    except Exception as exc:
+        job_runtime.write_runtime(
+            job_dir,
+            {
+                "status": "failed",
+                "phase": "error",
+                "worker_pid": os.getpid(),
+                "message": str(exc),
+                "error": str(exc),
+                "heartbeat_at": now_iso(),
+            },
+        )
+        raise
+
+
+def ensure_worker(
+    config: dict[str, Path | str],
+    prepared: dict[str, Any],
+    *,
+    force: bool,
+    script_path: Path,
+) -> dict[str, Any]:
+    job_dir: Path = prepared["job_dir"]
+    manifest_path: Path = prepared["manifest_path"]
+    runtime = job_runtime.read_runtime(job_dir)
+    pid = job_runtime.read_worker_pid(job_dir)
+    alive = bool(pid and job_runtime.pid_is_alive(pid))
+
+    if force:
+        print("[tick] --force：停止旧 worker 并清理后重启")
+        job_runtime.stop_worker(job_dir)
+        job = json.loads(manifest_path.read_text(encoding="utf-8"))
+        job["force"] = True
+        job["status"] = "prepared"
+        job["started_at"] = now_iso()
+        write_manifest(manifest_path, job)
+        alive = False
+        runtime = {}
+
+    if runtime.get("status") == "completed" and not force:
+        return runtime
+    if runtime.get("status") == "failed" and not force and not alive:
+        return runtime
+    if alive:
+        print(f"[tick] 复用运行中的 worker pid={pid}")
+        return runtime
+    if runtime.get("status") == "running" and pid and not alive:
+        print("[tick] worker 异常退出且未写完状态，将以 resume（--no-clear-cache）重启")
+        runtime = {}
+    elif runtime and not alive and runtime.get("status") not in {"completed", "failed", None, ""}:
+        # Stale non-terminal status without a live process.
+        print(f"[tick] 清理陈旧 runtime status={runtime.get('status')!r} 并 resume 重启")
+        runtime = {}
+
+    worker_cmd = [
+        sys.executable,
+        str(script_path),
+        "--worker",
+        "--job-dir",
+        str(job_dir),
+    ]
+    if config.get("project"):
+        worker_cmd.extend(["--project-dir", str(config["project"])])
+    print(f"[tick] 启动分离 worker：{' '.join(worker_cmd)}")
+    job_runtime.start_detached_worker(
+        worker_cmd,
+        job_dir,
+        Path(config["project"]),
+        os.environ.copy(),
+    )
+    return job_runtime.read_runtime(job_dir)
+
+
+def run_tick(
+    config: dict[str, Path | str],
+    *,
+    source: str | None,
+    job_dir_arg: str | None,
+    output_root: str,
+    max_height: int,
+    cookies_browser: str | None,
+    source_language: str,
+    voice_profile: str,
+    force: bool,
+    budget_seconds: float,
+) -> int:
+    script_path = Path(__file__).resolve()
+    if job_dir_arg:
+        job_dir = expand(job_dir_arg)
+        manifest_path = job_dir / "job.json"
+        if not manifest_path.is_file():
+            raise WorkflowError(f"--job-dir 缺少 job.json：{manifest_path}")
+        job = json.loads(manifest_path.read_text(encoding="utf-8"))
+        prepared = {
+            "job_dir": job_dir,
+            "result_dir": job_dir / "result",
+            "log_path": expand(job.get("log") or str(job_dir / "workflow.log")),
+            "manifest_path": manifest_path,
+            "source_video": expand(job["source_video"]),
+            "video_id": job.get("video_id") or job_dir.name,
+            "metadata": job.get("metadata") or {"title": job.get("title")},
+            "voice_role": (job.get("settings") or {}).get("voice_role") or SERIOUS_VOICE_ROLE,
+            "settings": job.get("settings") or {},
+            "seed_manifest": job,
+        }
+    else:
+        if not source:
+            raise WorkflowError("缺少视频 URL / 本地路径，或 --job-dir。")
+        prepared = prepare_job_paths(
+            config,
+            source,
+            output_root,
+            max_height,
+            cookies_browser,
+            source_language,
+            voice_profile,
+        )
+
+    job_dir = prepared["job_dir"]
+    runtime = ensure_worker(config, prepared, force=force, script_path=script_path)
+    if runtime.get("status") == "completed":
+        job = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+        final_path = expand(job.get("final_video") or "")
+        if final_path.is_file():
+            payload = completed_payload(
+                final_video=final_path,
+                job_dir=job_dir,
+                manifest_path=job_dir / "job.json",
+                validation=job.get("validation") or {},
+            )
+            emit_tick_payload(payload)
+            return 0
+        raise WorkflowError("runtime 标记 completed，但找不到 final_video。")
+
+    if runtime.get("status") == "failed":
+        payload = {
+            "status": "failed",
+            "phase": runtime.get("phase") or "error",
+            "job_directory": str(job_dir),
+            "message": runtime.get("message") or runtime.get("error") or "worker failed",
+            "next_action": "report_failure_to_user",
+            "runtime": runtime,
+            "log_tail": job_runtime.tail_text(job_runtime.worker_log_path(job_dir)),
+        }
+        emit_tick_payload(payload)
+        return 2
+
+    print(f"[tick] 等待 worker，预算 {budget_seconds:.0f}s（Hermes 前台硬顶约 600s）……")
+    waited = job_runtime.wait_for_runtime(job_dir, budget_seconds=budget_seconds)
+    status = str(waited.get("status") or "running")
+    if status == "completed":
+        job = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+        final_path = expand(job["final_video"])
+        payload = completed_payload(
+            final_video=final_path,
+            job_dir=job_dir,
+            manifest_path=job_dir / "job.json",
+            validation=job.get("validation") or {},
+        )
+        emit_tick_payload(payload)
+        return 0
+    if status == "failed":
+        payload = {
+            "status": "failed",
+            "phase": waited.get("phase") or "error",
+            "job_directory": str(job_dir),
+            "message": waited.get("message") or waited.get("error") or "worker failed",
+            "next_action": "report_failure_to_user",
+            "runtime": waited,
+            "log_tail": job_runtime.tail_text(job_runtime.worker_log_path(job_dir)),
+        }
+        emit_tick_payload(payload)
+        return 2
+
+    payload = {
+        "status": "in_progress",
+        "phase": waited.get("phase") or "worker_running",
+        "job_directory": str(job_dir),
+        "worker_alive": bool(waited.get("worker_alive")),
+        "worker_pid": job_runtime.read_worker_pid(job_dir),
+        "message": waited.get("message")
+        or "tick budget exhausted; worker still running",
+        "next_action": "immediately_call_tick_again",
+        "tick_command": (
+            f'python3 "{script_path}" --tick --job-dir "{job_dir}" '
+            f"--budget-seconds {int(budget_seconds)}"
+        ),
+        "runtime": waited,
+        "log_tail": job_runtime.tail_text(job_runtime.worker_log_path(job_dir)),
+    }
+    emit_tick_payload(payload)
+    # Exit 0 so Hermes does not treat an in-progress checkpoint as a tool failure.
+    return 0
+
+
+def run_full_sync(
+    config: dict[str, Path | str],
+    *,
+    source: str,
+    output_root: str,
+    max_height: int,
+    cookies_browser: str | None,
+    source_language: str,
+    voice_profile: str,
+    force: bool,
+) -> int:
+    started_at = now_iso()
+    prepared = prepare_job_paths(
+        config,
+        source,
+        output_root,
+        max_height,
+        cookies_browser,
+        source_language,
+        voice_profile,
+    )
+    if force:
+        job = json.loads(prepared["manifest_path"].read_text(encoding="utf-8"))
+        job["force"] = True
+        write_manifest(prepared["manifest_path"], job)
+
+    final_video, validation = finish_job(
+        config,
+        source_video=prepared["source_video"],
+        result_dir=prepared["result_dir"],
+        log_path=prepared["log_path"],
+        manifest_path=prepared["manifest_path"],
+        job_dir=prepared["job_dir"],
+        video_id=prepared["video_id"],
+        source_request=source,
+        metadata=prepared["metadata"],
+        source_language=source_language,
+        voice_role=prepared["voice_role"],
+        voice_profile=voice_profile,
+        force=force,
+        started_at=started_at,
+    )
+    summary = completed_payload(
+        final_video=final_video,
+        job_dir=prepared["job_dir"],
+        manifest_path=prepared["manifest_path"],
+        validation=validation,
+    )
+    print("[complete] 视频翻译完成。")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="下载常用语言视频，生成保留背景声、自动匹配男女音色的中文配音和硬字幕成片。"
+        description=(
+            "下载常用语言视频，生成保留背景声、自动匹配男女音色的中文配音和硬字幕成片。"
+            " Hermes 应使用 --tick 循环；长任务在分离的 worker 中运行。"
+        )
     )
     parser.add_argument("source", nargs="?", help="视频 URL 或本地视频文件")
     parser.add_argument("--output-root", default=os.getenv("PYVIDEOTRANS_OUTPUT_ROOT", str(DEFAULT_OUTPUT_ROOT)))
@@ -733,9 +1281,34 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--cookies-from-browser", help="仅在用户明确授权时使用，例如 chrome 或 firefox")
-    parser.add_argument("--force", action="store_true", help="清理项目任务缓存并重新执行翻译")
+    parser.add_argument("--force", action="store_true", help="停止旧 worker，清理项目任务缓存并重新执行翻译")
     parser.add_argument("--preflight-only", action="store_true", help="只检查依赖、模型和本地 LLM")
     parser.add_argument("--validate-result", type=str, help="只校验一个已有成片，不运行翻译")
+    parser.add_argument(
+        "--tick",
+        action="store_true",
+        help="Hermes 安全模式：启动/复用分离 worker，阻塞最多 --budget-seconds，返回可续跑 JSON",
+    )
+    parser.add_argument(
+        "--worker",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--job-dir",
+        help="已有任务目录（含 job.json）；--tick / --worker 续跑时使用",
+    )
+    parser.add_argument(
+        "--budget-seconds",
+        type=float,
+        default=float(os.getenv("PYVIDEOTRANS_TICK_BUDGET", DEFAULT_TICK_BUDGET_SECONDS)),
+        help=f"单次 --tick 最多等待秒数（默认 {DEFAULT_TICK_BUDGET_SECONDS}，需低于 Hermes 前台硬顶）",
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="在当前进程同步跑完全流程（本机调试用；Hermes 请用 --tick）",
+    )
     return parser
 
 
@@ -752,6 +1325,12 @@ def main() -> int:
                 f"不支持音色配置 {args.voice_profile!r}。当前只支持："
                 + ", ".join(VOICE_PROFILES)
             )
+
+        if args.worker:
+            if not args.job_dir:
+                raise WorkflowError("--worker 需要 --job-dir")
+            return run_worker(expand(args.job_dir), args.project_dir)
+
         config = preflight(args.project_dir)
         print_preflight(config)
         if args.preflight_only:
@@ -763,117 +1342,34 @@ def main() -> int:
             print(json.dumps({"final_video": str(final_video), "validation": validation}, ensure_ascii=False, indent=2))
             return 0
 
-        if not args.source:
-            raise WorkflowError("缺少视频 URL 或本地视频路径。")
-
-        started_at = now_iso()
-        local_source = expand(args.source) if not re.match(r"^https?://", args.source, flags=re.I) else None
-        if local_source:
-            if not local_source.is_file():
-                raise WorkflowError(f"本地视频不存在：{local_source}")
-            metadata: dict[str, Any] = {
-                "id": local_identifier(local_source),
-                "title": local_source.stem,
-                "webpage_url": None,
-            }
-        else:
-            print("[metadata] 正在读取远程视频信息……")
-            metadata = load_remote_metadata(Path(config["yt_dlp"]), args.source, args.cookies_from_browser)
-
-        if args.voice_profile == "auto":
-            # The definitive palette is selected after STT, using metadata plus
-            # transcript samples. This avoids a second LLM call and improves
-            # classification for vague video titles.
-            voice_role = SERIOUS_VOICE_ROLE
-            print("[voice] 男女音色将在转录后按全片风格自动选择。")
-        else:
-            voice_role = args.voice_profile
-
-        video_id = safe_identifier(str(metadata.get("id") or hashlib.sha256(args.source.encode()).hexdigest()[:12]))
-        job_dir = expand(args.output_root) / video_id
-        source_dir = job_dir / "source"
-        result_dir = job_dir / "result"
-        log_path = job_dir / "workflow.log"
-        manifest_path = job_dir / "job.json"
-        job_dir.mkdir(parents=True, exist_ok=True)
-
-        if local_source:
-            source_video = local_source
-            print(f"[source] 使用本地视频：{source_video}")
-        else:
-            source_video = download_video(
+        # Default (and Hermes skill path): checkpointed --tick. Use --full only for
+        # local debugging that can block far beyond Hermes' ~600s hard cap.
+        if args.full and not args.tick:
+            if not args.source:
+                raise WorkflowError("缺少视频 URL 或本地视频路径。")
+            return run_full_sync(
                 config,
-                args.source,
-                source_dir,
-                log_path,
-                args.max_height,
-                args.cookies_from_browser,
+                source=args.source,
+                output_root=args.output_root,
+                max_height=args.max_height,
+                cookies_browser=args.cookies_from_browser,
+                source_language=args.source_language,
+                voice_profile=args.voice_profile,
+                force=args.force,
             )
 
-        print(
-            "[translate] 开始转译。Demucs 会使用本机 GPU；请保持本命令前台阻塞运行，"
-            "完成前不要并发发起占用同一 GPU 的本地 LLM 请求（无需卸载模型）。"
-        )
-        final_video = run_translation(
+        return run_tick(
             config,
-            source_video,
-            result_dir,
-            log_path,
-            manifest_path,
-            args.source_language,
-            voice_role,
-            args.voice_profile,
-            metadata,
-            args.force,
+            source=args.source,
+            job_dir_arg=args.job_dir,
+            output_root=args.output_root,
+            max_height=args.max_height,
+            cookies_browser=args.cookies_from_browser,
+            source_language=args.source_language,
+            voice_profile=args.voice_profile,
+            force=args.force,
+            budget_seconds=args.budget_seconds,
         )
-        print(f"[validate] 正在校验成片和背景声：{final_video}")
-        validation = validate_result(final_video, config)
-
-        manifest: dict[str, Any] = {
-            "status": "completed",
-            "source_request": args.source,
-            "source_video": str(source_video),
-            "video_id": video_id,
-            "title": metadata.get("title"),
-            "final_video": str(final_video),
-            "job_directory": str(job_dir),
-            "settings": {
-                "source_language": args.source_language,
-                "target_language": "zh-cn",
-                "voice_profile_requested": args.voice_profile,
-                "voice": validation.get("voice_style_plan", {}).get("male_voice", voice_role),
-                "automatic_video_style_routing": os.getenv(
-                    "PYVIDEOTRANS_AUTO_VOICE_STYLE", "1"
-                ) == "1",
-                "video_style": validation.get("voice_style_plan", {}).get("style"),
-                "automatic_acoustic_voice_routing": os.getenv(
-                    "PYVIDEOTRANS_AUTO_VOICE_GENDER", "1"
-                ) == "1",
-                "female_voice": validation.get("voice_style_plan", {}).get(
-                    "female_voice",
-                    os.getenv("PYVIDEOTRANS_QWENTTS_FEMALE_VOICE", "female-01"),
-                ),
-                "llm_api": config["llm_api"],
-                "separation": "demucs two-stems vocals",
-                "subtitles": "hard-burned",
-                "max_download_height": args.max_height,
-            },
-            "validation": validation,
-            "started_at": started_at,
-            "completed_at": now_iso(),
-            "log": str(log_path),
-        }
-        write_manifest(manifest_path, manifest)
-        summary = {
-            "status": "completed",
-            "final_video": str(final_video),
-            "job_directory": str(job_dir),
-            "manifest": str(manifest_path),
-            "validation_ok": True,
-        }
-        print("[complete] 视频翻译完成。")
-        print(json.dumps(summary, ensure_ascii=False, indent=2))
-        return 0
     except WorkflowError as exc:
         print(f"[error] {exc}", file=sys.stderr)
         return 2

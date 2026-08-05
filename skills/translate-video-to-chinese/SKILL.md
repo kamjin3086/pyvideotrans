@@ -7,49 +7,62 @@ description: Download a common-language YouTube or other yt-dlp-compatible video
 
 Use the repository's tested local workflow. Keep translation calls serial, use Qwen TTS through its CLI, preserve the Demucs `no_vocals` background track, replace only vocals, and hard-burn Simplified Chinese subtitles. After STT, the default video-level router makes one serial local-Qwen call over metadata and transcript samples, then keeps one coherent male/female palette for the whole video. It maps ten dominant content styles to `dylan` or `serious-male-05` plus one of ten repository female clone voices. After Demucs separation, the acoustic router reuses `qwen-codec` and two tiny speaker prototypes only to choose male versus female per subtitle cue; ambiguous cues keep the selected male default.
 
-## Run the workflow
+## Run the workflow (tick loop — do not change Hermes timeouts)
+
+Hermes foreground terminals are hard-capped around **600 seconds**. Long videos cannot finish inside one tool call, and raising Hermes config is the wrong fix. This skill therefore uses a **detached worker + short tick** design owned by the project:
+
+1. Each `--tick` may start or reuse a project-owned worker that outlives the Hermes tool call.
+2. The tick process only waits up to `--budget-seconds` (default **480**), then returns a JSON checkpoint.
+3. Hermes immediately calls `--tick` again with the same `--job-dir` until `status` is `completed` or `failed`.
+4. Default resume uses `--no-clear-cache`. Never pass `--force` unless the user asked for a clean rerun.
+
+### Steps
 
 1. Extract exactly one video URL or local video path from the user's request.
 2. Ask for a URL or path only if none was provided.
 3. Infer an explicitly stated source language and map it to `en`, `ja`, `ko`, `fr`, `de`, `es`, `it`, `pt`, or `ru`. Otherwise use `auto`.
-4. Run the bundled [workflow script](scripts/translate_video.py) through Hermes' absolute skill-directory template variable **as one foreground blocking terminal call**:
+4. Run the first tick through Hermes' absolute skill-directory template variable:
 
    ```bash
-   python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" "<URL-or-local-video>" --source-language <code-or-auto>
+   python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --tick "<URL-or-local-video>" --source-language <code-or-auto>
    ```
 
-5. Wait until that single command exits. Do not start a second translation of the same video concurrently.
-6. Report the absolute final video path, job directory, validation status, and manifest path printed by the script.
+5. Read the printed `[tick]` JSON:
+   - `status=completed` → stop; report `final_video`, `job_directory`, and `manifest`.
+   - `status=failed` → stop; report `message` / `log_tail`.
+   - `status=in_progress` → **immediately** run the `tick_command` from the JSON (or the equivalent `--tick --job-dir …`). Do not chat, search, browse, or start other tools between ticks.
+6. Repeat step 5 until completed or failed. Process one video at a time.
 
-### Critical: keep Demucs and the local LLM off the GPU at the same time
-
-Demucs uses the same AMD ROCm GPU as the local Qwen endpoint on port `8101`. If the agent backgrounds the workflow and keeps making chat/tool turns while Demucs runs, stem segments after the first ~8 seconds can be silently zeroed even though Demucs exits 0. Do **not** unload or restart the LLM. Avoid contention by **blocking the Hermes tool call** until the script exits.
-
-#### Required Hermes tool shape (blocks; no mid-wait LLM)
-
-Use a single foreground `terminal` call. While that tool is running, the agent loop waits for the tool result and does **not** issue another LLM completion.
+### Required Hermes tool shape
 
 ```text
 terminal(
-  command='python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" "<URL-or-local-video>" --source-language <code-or-auto>',
+  command='python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --tick "<URL>" --source-language <code-or-auto>',
+  background=false
+)
+```
+
+Later ticks:
+
+```text
+terminal(
+  command='python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --tick --job-dir "<job_directory_from_json>"',
   background=false
 )
 ```
 
 Rules:
 
-- Prefer **omitting** `timeout` so Hermes uses the configured `terminal.timeout` (this host is already `6000` seconds ≈ 100 minutes). That is enough for typical ≤15 minute videos.
-- If you must pass `timeout`, it must be ≤ `TERMINAL_MAX_FOREGROUND_TIMEOUT` (Hermes default hard cap is **600** unless the gateway env raises it). Passing e.g. `timeout=3600` with the default cap makes Hermes **reject** foreground mode and nudge you to `background=true` — do not do that for this skill.
+- Prefer **omitting** `timeout`, or pass a value **≤ 600** (for example `560`). Never pass `timeout=3600` / `6000` — Hermes will reject or force background mode.
 - Do **not** set `background=true`.
-- Do **not** use `process(action='poll'|'wait'|'log')` loops around this job.
-- Do **not** call `web_search`, browser, or other tools, and do not send interim progress chats, until the foreground `terminal` returns.
-- After it returns, read the printed JSON/`workflow.log` and only then reply to the user.
+- Do **not** use `process(action='poll'|'wait'|'log')` around this job.
+- Do **not** ask the user to raise `TERMINAL_MAX_FOREGROUND_TIMEOUT` or edit Hermes config for this skill.
+- Do **not** invent alternate Python one-liners or call `run_cli_local.sh` directly; always use this script's `--tick` loop.
+- Between `in_progress` ticks, re-enter the next terminal call immediately so Demucs (early phase) stays free of concurrent local-LLM chat traffic.
 
-`background=true` + `notify_on_complete=true` can also avoid polling, but it is weaker for this GPU case (other user messages can still start LLM turns mid-job). Prefer foreground blocking.
+The heavy pipeline runs in a detached worker (`worker.log`, `runtime.json`, `worker.pid` under the job directory). Killing or timing out a tick only ends the waiter; the worker keeps going and the next tick reconnects.
 
-The script itself validates Demucs stem energy and retries once with `--shifts 1` if collapse is detected. Still treat GPU-quiet blocking as mandatory.
-
-If a longer video needs more than ~100 minutes, ask the user to raise gateway `TERMINAL_MAX_FOREGROUND_TIMEOUT` (and keep `terminal.timeout` ≥ that), then re-run with one foreground call — still do not background.
+`--force` stops any old worker and passes CLI `--clear_cache` (wipes that job's generated outputs). Use only when the user explicitly requests a clean rerun.
 
 The default output directory is `~/Videos/translated-videos/<video-id>/`. Honor a user-requested destination with `--output-root /absolute/path`.
 
@@ -84,12 +97,13 @@ python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --preflight-only
 - For a login-gated video, retry only after the user explicitly chooses a browser cookie source:
 
   ```bash
-  python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" "<URL>" --cookies-from-browser chrome
+  python3 "${HERMES_SKILL_DIR}/scripts/translate_video.py" --tick "<URL>" --cookies-from-browser chrome
   ```
 
 - Reuse an already completed and valid result. Pass `--force` only when the user explicitly requests a clean rerun.
-- Preserve the original downloaded source under the job directory so a failed translation can be resumed.
-- Do not claim success merely because the translator exited with code zero. The script must validate the final audio/video streams, duration, workflow artifacts, and background-audio preservation samples.
+- Preserve the original downloaded source under the job directory so a failed or timed-out tick can resume via `--tick --job-dir …` without wiping progress.
+- Do not claim success merely because a tick exited with code zero. Success requires `[tick]` JSON `status=completed` plus a validated `final_video`.
+- Local debugging outside Hermes may use `--full` for a single long blocking run. Hermes must not use `--full`.
 
 ## Expected deliverables
 
@@ -97,9 +111,12 @@ Each job directory contains:
 
 - `source/`: downloaded or referenced source video
 - `result/`: final MP4 plus workflow artifacts such as `instrument.wav`, `vocal.wav`, and `zh-cn.srt`
-- `workflow.log`: download and translation logs
+- `workflow.log`: download and translation logs from the waiter / prep phase
+- `worker.log`: detached worker stdout/stderr
+- `runtime.json`: worker checkpoint (`running` / `completed` / `failed`)
+- `worker.pid`: detached worker pid while alive
 - `job.json`: source, settings, output paths, timestamps, and validation results
 - `result/voice-style-plan.json`: video-wide style, confidence, reason, and selected male/female palette
 - `result/voice-routing.json`: per-subtitle acoustic label, confidence margin, selected voice, and routing summary
 
-Treat the `final_video` value in the script's final JSON output as authoritative.
+Treat the `final_video` value in a `status=completed` tick JSON as authoritative.
