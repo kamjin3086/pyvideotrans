@@ -34,10 +34,11 @@ Optional: `prepare … --lang en|ja|ko|fr|de|es|it|pt|ru` when the user names a 
    - `completed` + `next_command` → one-line `user_hint` to user, then run that command.
    - `in_progress` → **immediately** run `next_command` / `continue` again; **no chat**.
    - `failed` → run `continue` **once** more; if still failed, stop and report `message` / `log_tail`.
-7. Final success: report `final_video`, `job_directory`, and **actual dubbing** from JSON:
-   - Prefer `primary_dub_voice` / `dubbing.primary_dub_voice` and `voice_routing_counts` / `dubbing.routing_counts`.
-   - `dubbing.female_voice_for_female_cues` is only the palette for female-classified cues — **never** report “全片女声” just because that field is set.
-   - Example: counts `male=114,female=0` + `primary_dub_voice=serious-male-05` → tell the user the Chinese dub is male (`serious-male-05`), style e.g. knowledge.
+7. Final success: report only the **final video path** and `job_directory` — one short line.
+   Do not report subtitle counts, routing counts, or dub statistics unless the user explicitly
+   asks; the validate JSON already guarantees the video is fine. If the user does ask for
+   dubbing details, quote `primary_dub_voice` / `voice_routing_counts` verbatim from JSON and
+   never invent numbers.
 8. Do not claim success on exit code alone.
 
 Hermes `terminal`: `background=false`; omit `timeout` or use ≤560. Never `timeout=3600/6000`, never `background=true`.
@@ -70,8 +71,7 @@ python3 …/run_cli_local.sh --task vtv …
 # ✘ mid-stage chatter / search while Demucs or continue is running
 # ✘ timeout=6000 / background=true / process poll loops
 # ✘ --force unless the user asked for a clean rerun
-# ✘ after validate, invent “全片女声” from female_voice palette alone
-#    (must use primary_dub_voice + voice_routing_counts)
+# ✘ report subtitle/routing counts unless asked; never invent numbers from memory
 ```
 
 ## Stages (for awareness only)

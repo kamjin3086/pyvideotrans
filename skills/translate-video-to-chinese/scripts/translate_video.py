@@ -533,8 +533,12 @@ def validate_result(final_video: Path, config: dict[str, Path | str]) -> dict[st
         try:
             routing = json.loads(routing_path.read_text(encoding="utf-8"))
             routing_counts = routing["counts"]
-            if sum(int(value) for value in routing_counts.values()) != len(intervals):
-                raise ValueError("路由行数与中文字幕条数不一致")
+            routing_total = sum(int(value) for value in routing_counts.values())
+            if routing_total != len(intervals):
+                raise ValueError(
+                    f"路由行数与中文字幕条数不一致（路由 {routing_total} 行 vs "
+                    f"字幕 {len(intervals)} 条）"
+                )
             result["voice_routing_counts"] = routing_counts
             result["female_voice"] = routing.get("female_voice")
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:

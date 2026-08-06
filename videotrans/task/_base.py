@@ -96,16 +96,29 @@ class BaseTask(BaseCon):
             logger.debug(f'原始语言字幕和目标语言字幕行数一致，均为 {source_len=}')
             return target_srt_list
 
-        logger.warning(f'翻译结果行数{target_len}，原始字幕行数{source_len}，不一致,根据原始字幕时间轴获取对应目标字幕文本')
+        logger.warning(
+            f'翻译结果行数{target_len}，原始字幕行数{source_len}，不一致,'
+            f'根据原始字幕时间轴获取对应目标字幕文本'
+        )
         # 根据原始字幕的时间轴，到目标字幕内寻找同样时间轴的字幕文本，更准确
         _time2srt={}
         for it in target_srt_list:
             _time2srt[it['time']]=it['text']
 
-        logger.debug(f'翻译结果行数{target_len} > 原始字幕行{source_len}，根据原始字幕的时间轴，到目标字幕内寻找同样时间轴的字幕文本')
         _source=copy.deepcopy(source_srt_list)
         for it in _source:
             it['text']=_time2srt.get(it['time'],'')
+        missing_lines=[(i + 1, it['time']) for i, it in enumerate(_source) if not _time2srt.get(it['time'])]
+        if missing_lines:
+            logger.warning(
+                f'翻译缺失/空文本的字幕共 {len(missing_lines)} 条，行号/时间轴：'
+                f'{missing_lines[:50]}'
+            )
+        elif target_len > source_len:
+            logger.debug(
+                f'翻译结果行数{target_len} > 原始字幕行{source_len}，'
+                f'已按原始字幕时间轴对齐目标字幕文本'
+            )
         return _source
 
     # 手动调用设为结束，成功完成或出错时

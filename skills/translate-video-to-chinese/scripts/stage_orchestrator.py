@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
+import repair_subtitles
 import job_runtime
 import pipeline_stages as stages
 
@@ -220,6 +221,15 @@ def execute_cli_stage_in_process(
             ffmpeg=config.get("ffmpeg"),
         )
         print(f"[stage] hydrated workcache for {stage}: {notes}")
+    if stage == "translate" and force:
+        # A previous run may have left a dub-rewritten zh-cn.srt (re-timed
+        # timestamps), which makes the CLI skip re-translation and breaks the
+        # repair's 1:1 alignment. Drop the derived artifact so trans() runs
+        # fresh; the LLM translation cache keeps this fast and deterministic.
+        stale_target = ctx["result_dir"] / "zh-cn.srt"
+        if stale_target.is_file():
+            stale_target.unlink()
+            print("[stage] force translate：已删除旧 zh-cn.srt，重新翻译")
 
     job_runtime.write_runtime(
         job_dir,
@@ -248,6 +258,14 @@ def execute_cli_stage_in_process(
         translation_environment=translation_environment,
         cache_folder=cache_folder,
     )
+    if stage == "translate":
+        # The local LLM occasionally drops/empties one SRT block. Repair zh-cn.srt
+        # (1:1 with auto.srt) before dub so voice routing and validation line up.
+        repaired = repair_subtitles.repair_translated_subtitles(
+            ctx["result_dir"],
+            llm_api=str(config.get("llm_api") or repair_subtitles.DEFAULT_LLM_API),
+        )
+        print(f"[stage] 翻译补译结果：{repaired}")
     _ready, artifacts = stages.stage_artifacts_ready(
         stage,
         job_dir=job_dir,
